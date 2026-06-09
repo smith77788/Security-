@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from "react";
 import { api } from "../api/client";
+import { useApp } from "../context/AppContext";
 
 const SUGGESTIONS = [
   "Почему интернет медленный?",
@@ -13,10 +14,11 @@ const SUGGESTIONS = [
 const s = {
   page: { maxWidth: 720 },
   h1: { fontSize: 22, fontWeight: 700, marginBottom: 8, color: "#f1f5f9" },
-  sub: { fontSize: 13, color: "#64748b", marginBottom: 24 },
-  suggestions: { display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 24 },
+  sub: { fontSize: 13, color: "#64748b", marginBottom: 20 },
+  locNote: { background: "#131c30", border: "1px solid #1e2535", borderRadius: 8, padding: "8px 12px", fontSize: 12, color: "#60a5fa", marginBottom: 18 },
+  suggestions: { display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 22 },
   suggBtn: { background: "#161b27", border: "1px solid #1e2535", borderRadius: 20, color: "#94a3b8", padding: "6px 14px", fontSize: 13, cursor: "pointer" },
-  chat: { display: "flex", flexDirection: "column", gap: 14, marginBottom: 20, minHeight: 120 },
+  chat: { display: "flex", flexDirection: "column", gap: 14, marginBottom: 20, minHeight: 100 },
   bubble: (role) => ({
     maxWidth: "80%", padding: "12px 16px", borderRadius: 12, fontSize: 14, lineHeight: 1.6,
     alignSelf: role === "user" ? "flex-end" : "flex-start",
@@ -31,16 +33,16 @@ const s = {
 };
 
 export default function Assistant() {
+  const { selectedLocationId, locations } = useApp();
   const [messages, setMessages] = useState([
-    { role: "assistant", text: "Привет! Я локальный помощник по безопасности сети. Задайте вопрос о вашей домашней сети." },
+    { role: "assistant", text: "Привет! Я локальный помощник по безопасности. Задайте вопрос о вашей домашней сети." },
   ]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const bottomRef = useRef(null);
+  const locName = selectedLocationId ? locations.find((l) => l.id === selectedLocationId)?.name : null;
 
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
 
   const send = async (question) => {
     const q = question || input.trim();
@@ -49,7 +51,7 @@ export default function Assistant() {
     setMessages((m) => [...m, { role: "user", text: q }]);
     setLoading(true);
     try {
-      const res = await api.ask(q);
+      const res = await api.ask(q, selectedLocationId);
       setMessages((m) => [...m, { role: "assistant", text: res.answer }]);
     } catch (e) {
       setMessages((m) => [...m, { role: "assistant", text: "Ошибка: " + e.message }]);
@@ -61,30 +63,19 @@ export default function Assistant() {
   return (
     <div style={s.page}>
       <h1 style={s.h1}>Помощник</h1>
-      <p style={s.sub}>Задайте вопрос о вашей домашней сети. Всё анализируется локально.</p>
-
+      <p style={s.sub}>Задайте вопрос о сети. Всё анализируется локально, без LLM.</p>
+      {locName && <div style={s.locNote}>📍 Анализирую только локацию: <strong>{locName}</strong></div>}
       <div style={s.suggestions}>
-        {SUGGESTIONS.map((q) => (
-          <button key={q} style={s.suggBtn} onClick={() => send(q)}>{q}</button>
-        ))}
+        {SUGGESTIONS.map((q) => <button key={q} style={s.suggBtn} onClick={() => send(q)}>{q}</button>)}
       </div>
-
       <div style={s.chat}>
-        {messages.map((m, i) => (
-          <div key={i} style={s.bubble(m.role)}>{m.text}</div>
-        ))}
+        {messages.map((m, i) => <div key={i} style={s.bubble(m.role)}>{m.text}</div>)}
         {loading && <div style={s.bubble("assistant")}>…</div>}
         <div ref={bottomRef} />
       </div>
-
       <div style={s.inputRow}>
-        <input
-          style={s.input}
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && send()}
-          placeholder="Введите вопрос…"
-        />
+        <input style={s.input} value={input} onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && send()} placeholder="Введите вопрос…" />
         <button style={s.sendBtn} onClick={() => send()}>Спросить</button>
       </div>
     </div>

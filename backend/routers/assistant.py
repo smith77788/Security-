@@ -9,4 +9,4 @@ router = APIRouter(prefix="/api/assistant", tags=["assistant"])
 
 @router.post("", response_model=AssistantResponse)
 def ask(body: AssistantQuery, db: Session = Depends(get_db)):
-    return answer(body.question, db)
+    return answer(body.question, db, location_id=body.location_id)

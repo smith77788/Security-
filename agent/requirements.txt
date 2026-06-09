@@ -1,0 +1,3 @@
+requests==2.32.3
+# Optional — needed for DNS packet capture (requires CAP_NET_RAW)
+# scapy==2.5.0

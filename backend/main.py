@@ -1,7 +1,8 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -12,7 +13,9 @@ from config import (
     DNS_CAPTURE_ENABLED, NETWORK_INTERFACE, ADMIN_PASSWORD,
 )
 from database import init_db, SessionLocal
+from services.realtime import manager
 from routers import devices, dns, alerts, dashboard, assistant, settings as settings_router
+from routers import locations, ingest, ws as ws_router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 log = logging.getLogger("main")
@@ -25,23 +28,17 @@ async def lifespan(app: FastAPI):
     init_db()
     log.info("Database initialised")
 
+    # Wire the running event loop into the realtime manager for thread-safe emit
+    manager.set_loop(asyncio.get_event_loop())
+
     if DEMO_MODE:
         from services.demo_seed import seed
         seed()
-        log.info("Demo data loaded")
+        log.info("Demo data loaded (3 locations)")
     else:
-        # Initial device scan
         from services.device_scanner import run_scan
         run_scan()
 
-        scheduler.add_job(
-            run_scan,
-            trigger=IntervalTrigger(seconds=SCAN_INTERVAL_SECONDS),
-            id="device_scan",
-            replace_existing=True,
-        )
-
-        # Anomaly checks every 5 minutes
         def _run_anomaly():
             from services.anomaly_detector import run_all_checks
             db = SessionLocal()
@@ -50,9 +47,6 @@ async def lifespan(app: FastAPI):
             finally:
                 db.close()
 
-        scheduler.add_job(_run_anomaly, trigger=IntervalTrigger(minutes=5), id="anomaly_check", replace_existing=True)
-
-        # Log retention daily
         def _run_retention():
             from routers.settings import apply_retention
             db = SessionLocal()
@@ -61,25 +55,46 @@ async def lifespan(app: FastAPI):
             finally:
                 db.close()
 
-        scheduler.add_job(_run_retention, trigger=IntervalTrigger(hours=24), id="retention", replace_existing=True)
+        def _check_offline_locations():
+            """Mark locations offline if no heartbeat for >2 minutes."""
+            from datetime import datetime, timedelta
+            from models import Location
+            db = SessionLocal()
+            try:
+                cutoff = datetime.utcnow() - timedelta(minutes=2)
+                stale = db.query(Location).filter(
+                    Location.is_online == True,  # noqa: E712
+                    Location.last_heartbeat < cutoff,
+                ).all()
+                for loc in stale:
+                    loc.is_online = False
+                    manager.emit_location_status(loc.id, loc.name, online=False)
+                if stale:
+                    db.commit()
+            finally:
+                db.close()
+
+        scheduler.add_job(run_scan, IntervalTrigger(seconds=SCAN_INTERVAL_SECONDS), id="scan", replace_existing=True)
+        scheduler.add_job(_run_anomaly, IntervalTrigger(minutes=5), id="anomaly", replace_existing=True)
+        scheduler.add_job(_run_retention, IntervalTrigger(hours=24), id="retention", replace_existing=True)
+        scheduler.add_job(_check_offline_locations, IntervalTrigger(minutes=1), id="offline_check", replace_existing=True)
 
         if DNS_CAPTURE_ENABLED:
             from services import dns_monitor
             dns_monitor.start(NETWORK_INTERFACE)
 
         scheduler.start()
-        log.info("Scheduler started (scan interval: %ds)", SCAN_INTERVAL_SECONDS)
+        log.info("Scheduler started")
 
     yield
-
     scheduler.shutdown(wait=False)
-    log.info("Shutdown complete")
+    log.info("Shutdown")
 
 
 app = FastAPI(
     title="Family Security",
-    description="Home Network Guardian — local-only defensive monitoring",
-    version="1.0.0",
+    description="Home Network Guardian — multi-location, real-time defensive monitoring",
+    version="2.0.0",
     lifespan=lifespan,
 )
 
@@ -91,31 +106,26 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Simple token auth middleware (optional — skip in demo mode)
-PROTECTED_PREFIXES = ["/api/settings"]
+PROTECTED = ["/api/settings", "/api/locations"]
 
 
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
-    if not DEMO_MODE and any(request.url.path.startswith(p) for p in PROTECTED_PREFIXES):
+    # Ingest routes use API key auth, not admin token
+    if request.url.path.startswith("/api/ingest"):
+        return await call_next(request)
+    if not DEMO_MODE and any(request.url.path.startswith(p) for p in PROTECTED):
         token = request.headers.get("X-Admin-Token", "")
         if token != ADMIN_PASSWORD:
             return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
     return await call_next(request)
 
 
-app.include_router(devices.router)
-app.include_router(dns.router)
-app.include_router(alerts.router)
-app.include_router(dashboard.router)
-app.include_router(assistant.router)
-app.include_router(settings_router.router)
+for r in [devices, dns, alerts, dashboard, assistant, settings_router, locations, ingest]:
+    app.include_router(r.router)
+app.include_router(ws_router.router)
 
 
 @app.get("/api/health")
 def health():
-    return {
-        "status": "ok",
-        "demo_mode": DEMO_MODE,
-        "dns_capture": DNS_CAPTURE_ENABLED,
-    }
+    return {"status": "ok", "demo_mode": DEMO_MODE, "dns_capture": DNS_CAPTURE_ENABLED, "version": "2.0.0"}

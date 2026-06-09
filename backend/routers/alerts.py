@@ -12,6 +12,7 @@ router = APIRouter(prefix="/api/alerts", tags=["alerts"])
 
 @router.get("", response_model=List[AlertOut])
 def list_alerts(
+    location_id: Optional[int] = Query(None),
     unread_only: bool = False,
     severity: Optional[str] = None,
     hours: int = Query(24, le=168),
@@ -19,8 +20,10 @@ def list_alerts(
 ):
     since = datetime.utcnow() - timedelta(hours=hours)
     q = db.query(Alert).filter(Alert.timestamp >= since)
+    if location_id is not None:
+        q = q.filter(Alert.location_id == location_id)
     if unread_only:
-        q = q.filter(Alert.is_read == False)  # noqa: E712
+        q = q.filter(Alert.is_read == False)   # noqa: E712
     if severity:
         q = q.filter(Alert.severity == severity)
     return q.order_by(Alert.timestamp.desc()).all()
@@ -36,7 +39,13 @@ def mark_read(alert_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/read-all")
-def mark_all_read(db: Session = Depends(get_db)):
-    db.query(Alert).filter(Alert.is_read == False).update({"is_read": True})  # noqa: E712
+def mark_all_read(
+    location_id: Optional[int] = Query(None),
+    db: Session = Depends(get_db),
+):
+    q = db.query(Alert).filter(Alert.is_read == False)   # noqa: E712
+    if location_id is not None:
+        q = q.filter(Alert.location_id == location_id)
+    q.update({"is_read": True})
     db.commit()
     return {"ok": True}

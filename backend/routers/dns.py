@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Optional
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import func
@@ -13,32 +13,25 @@ router = APIRouter(prefix="/api/dns", tags=["dns"])
 
 def _period_start(period: str) -> datetime:
     now = datetime.utcnow()
-    if period == "1h":
-        return now - timedelta(hours=1)
-    if period == "7d":
-        return now - timedelta(days=7)
-    return now - timedelta(hours=24)  # default 24h
+    return now - {"1h": timedelta(hours=1), "7d": timedelta(days=7)}.get(period, timedelta(hours=24))
 
 
 @router.get("/top-domains", response_model=List[DomainStat])
 def top_domains(
     period: str = Query("24h", pattern="^(1h|24h|7d)$"),
     limit: int = Query(20, le=100),
+    location_id: Optional[int] = Query(None),
     db: Session = Depends(get_db),
 ):
     since = _period_start(period)
-    rows = (
-        db.query(
-            DNSQuery.domain,
-            func.count(DNSQuery.id).label("count"),
-            func.max(DNSQuery.timestamp).label("last_seen"),
-        )
-        .filter(DNSQuery.timestamp >= since)
-        .group_by(DNSQuery.domain)
-        .order_by(func.count(DNSQuery.id).desc())
-        .limit(limit)
-        .all()
-    )
+    q = db.query(
+        DNSQuery.domain,
+        func.count(DNSQuery.id).label("count"),
+        func.max(DNSQuery.timestamp).label("last_seen"),
+    ).filter(DNSQuery.timestamp >= since)
+    if location_id is not None:
+        q = q.filter(DNSQuery.location_id == location_id)
+    rows = q.group_by(DNSQuery.domain).order_by(func.count(DNSQuery.id).desc()).limit(limit).all()
     return [DomainStat(domain=r.domain, count=r.count, last_seen=r.last_seen) for r in rows]
 
 
@@ -46,17 +39,15 @@ def top_domains(
 def top_devices(
     period: str = Query("24h", pattern="^(1h|24h|7d)$"),
     limit: int = Query(10, le=50),
+    location_id: Optional[int] = Query(None),
     db: Session = Depends(get_db),
 ):
     since = _period_start(period)
-    rows = (
-        db.query(DNSQuery.device_mac, func.count(DNSQuery.id).label("count"))
+    q = db.query(DNSQuery.device_mac, func.count(DNSQuery.id).label("count"))\
         .filter(DNSQuery.timestamp >= since)
-        .group_by(DNSQuery.device_mac)
-        .order_by(func.count(DNSQuery.id).desc())
-        .limit(limit)
-        .all()
-    )
+    if location_id is not None:
+        q = q.filter(DNSQuery.location_id == location_id)
+    rows = q.group_by(DNSQuery.device_mac).order_by(func.count(DNSQuery.id).desc()).limit(limit).all()
     result = []
     for mac, cnt in rows:
         dev = db.query(Device).filter(Device.mac == mac).first() if mac else None
@@ -72,11 +63,14 @@ def top_devices(
 @router.get("/recent", response_model=List[DNSQueryOut])
 def recent_queries(
     limit: int = Query(100, le=500),
-    device_mac: str = Query(None),
-    domain: str = Query(None),
+    location_id: Optional[int] = Query(None),
+    device_mac: Optional[str] = Query(None),
+    domain: Optional[str] = Query(None),
     db: Session = Depends(get_db),
 ):
     q = db.query(DNSQuery).order_by(DNSQuery.timestamp.desc())
+    if location_id is not None:
+        q = q.filter(DNSQuery.location_id == location_id)
     if device_mac:
         q = q.filter(DNSQuery.device_mac == device_mac)
     if domain:

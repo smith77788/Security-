@@ -15,8 +15,16 @@ async function request(path, options = {}) {
 export const api = {
   health: () => request("/health"),
 
+  // Locations
+  locations: () => request("/locations"),
+  locationsSummary: () => request("/locations/summary"),
+  createLocation: (body) => request("/locations", { method: "POST", body: JSON.stringify(body) }),
+  updateLocation: (id, body) => request(`/locations/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  deleteLocation: (id) => request(`/locations/${id}`, { method: "DELETE" }),
+  rotateKey: (id) => request(`/locations/${id}/rotate-key`, { method: "POST" }),
+
   // Dashboard
-  score: () => request("/dashboard/score"),
+  score: (locationId) => request(`/dashboard/score${locationId ? `?location_id=${locationId}` : ""}`),
 
   // Devices
   devices: (params = {}) => {
@@ -27,8 +35,10 @@ export const api = {
   acknowledgeDevice: (id) => request(`/devices/${id}/acknowledge`, { method: "POST" }),
 
   // DNS
-  topDomains: (period = "24h") => request(`/dns/top-domains?period=${period}&limit=20`),
-  topDevicesDNS: (period = "24h") => request(`/dns/top-devices?period=${period}`),
+  topDomains: (period = "24h", locationId) =>
+    request(`/dns/top-domains?period=${period}&limit=20${locationId ? `&location_id=${locationId}` : ""}`),
+  topDevicesDNS: (period = "24h", locationId) =>
+    request(`/dns/top-devices?period=${period}${locationId ? `&location_id=${locationId}` : ""}`),
   recentQueries: (params = {}) => {
     const q = new URLSearchParams(params).toString();
     return request(`/dns/recent${q ? "?" + q : ""}`);
@@ -40,10 +50,12 @@ export const api = {
     return request(`/alerts${q ? "?" + q : ""}`);
   },
   markAlertRead: (id) => request(`/alerts/${id}/read`, { method: "POST" }),
-  markAllAlertsRead: () => request("/alerts/read-all", { method: "POST" }),
+  markAllAlertsRead: (locationId) =>
+    request(`/alerts/read-all${locationId ? `?location_id=${locationId}` : ""}`, { method: "POST" }),
 
   // Assistant
-  ask: (question) => request("/assistant", { method: "POST", body: JSON.stringify({ question }) }),
+  ask: (question, locationId) =>
+    request("/assistant", { method: "POST", body: JSON.stringify({ question, location_id: locationId }) }),
 
   // Settings
   settings: () => request("/settings"),
