@@ -10,16 +10,24 @@ import Assistant from "./components/Assistant";
 import Settings from "./components/Settings";
 import Locations from "./components/Locations";
 import RealtimeFeed from "./components/RealtimeFeed";
+import NetworkMap from "./components/NetworkMap";
+import Connections from "./components/Connections";
+import Bandwidth from "./components/Bandwidth";
+import ThreatIntel from "./components/ThreatIntel";
 
 const NAV = [
-  { path: "/",          label: "Обзор",      icon: "🏠" },
-  { path: "/locations", label: "Локации",    icon: "📍" },
-  { path: "/devices",   label: "Устройства", icon: "📡" },
-  { path: "/dns",       label: "DNS",        icon: "🌐" },
-  { path: "/alerts",    label: "События",    icon: "🔔" },
-  { path: "/feed",      label: "Live Feed",  icon: "⚡" },
-  { path: "/assistant", label: "Помощник",   icon: "💬" },
-  { path: "/settings",  label: "Настройки",  icon: "⚙️" },
+  { path: "/",             label: "Обзор",      icon: "🏠" },
+  { path: "/locations",    label: "Локации",    icon: "📍" },
+  { path: "/devices",      label: "Устройства", icon: "📡" },
+  { path: "/dns",          label: "DNS",        icon: "🌐" },
+  { path: "/alerts",       label: "События",    icon: "🔔" },
+  { path: "/map",          label: "Карта сети", icon: "🗺" },
+  { path: "/connections",  label: "Соединения", icon: "🔗" },
+  { path: "/bandwidth",    label: "Трафик",     icon: "📊" },
+  { path: "/threats",      label: "Угрозы",     icon: "🛡" },
+  { path: "/feed",         label: "Live Feed",  icon: "⚡" },
+  { path: "/assistant",    label: "Помощник",   icon: "💬" },
+  { path: "/settings",     label: "Настройки",  icon: "⚙️" },
 ];
 
 const ONLINE_DOT = { width: 7, height: 7, borderRadius: "50%", display: "inline-block", marginRight: 4 };
@@ -144,14 +152,18 @@ function AppInner() {
 
         <main style={s.main}>
           <Routes>
-            <Route path="/"          element={<Overview />} />
-            <Route path="/locations" element={<Locations />} />
-            <Route path="/devices"   element={<Devices />} />
-            <Route path="/dns"       element={<DNSActivity />} />
-            <Route path="/alerts"    element={<Alerts />} />
-            <Route path="/feed"      element={<RealtimeFeed />} />
-            <Route path="/assistant" element={<Assistant />} />
-            <Route path="/settings"  element={<Settings />} />
+            <Route path="/"             element={<Overview />} />
+            <Route path="/locations"    element={<Locations />} />
+            <Route path="/devices"      element={<Devices />} />
+            <Route path="/dns"          element={<DNSActivity />} />
+            <Route path="/alerts"       element={<Alerts />} />
+            <Route path="/map"          element={<NetworkMap />} />
+            <Route path="/connections"  element={<Connections />} />
+            <Route path="/bandwidth"    element={<Bandwidth />} />
+            <Route path="/threats"      element={<ThreatIntel />} />
+            <Route path="/feed"         element={<RealtimeFeed />} />
+            <Route path="/assistant"    element={<Assistant />} />
+            <Route path="/settings"     element={<Settings />} />
           </Routes>
         </main>
       </div>

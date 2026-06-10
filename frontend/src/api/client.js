@@ -62,4 +62,31 @@ export const api = {
   updateSetting: (key, value) => request(`/settings/${key}`, { method: "PUT", body: JSON.stringify({ value }) }),
   clearLogs: () => request("/settings/logs", { method: "DELETE" }),
   applyRetention: () => request("/settings/apply-retention", { method: "POST" }),
+
+  // Network map & topology
+  networkTopology: (queryString = "") => request(`/network/topology${queryString}`),
+  connections: (params = {}) => {
+    const q = new URLSearchParams(params).toString();
+    return request(`/network/connections${q ? "?" + q : ""}`);
+  },
+  networkConfig: () => request("/network/config"),
+  fingerprints: () => request("/network/fingerprints"),
+
+  // Bandwidth
+  bandwidthTimeline: (params = {}) => {
+    const q = new URLSearchParams(params).toString();
+    return request(`/network/bandwidth/timeline${q ? "?" + q : ""}`);
+  },
+  bandwidthTop: (params = {}) => {
+    const q = new URLSearchParams(params).toString();
+    return request(`/network/bandwidth/top${q ? "?" + q : ""}`);
+  },
+
+  // Threat intelligence
+  intelStatus: () => request("/intel/status"),
+  intelRefresh: () => request("/intel/refresh", { method: "POST" }),
+  lookupIp: (ip) => request(`/intel/lookup/ip?ip=${encodeURIComponent(ip)}`),
+  lookupDomain: (domain) => request(`/intel/lookup/domain?domain=${encodeURIComponent(domain)}`),
+  beaconing: (queryString = "") => request(`/intel/beaconing${queryString}`),
+  beaconingAlert: (queryString = "") => request(`/intel/beaconing/alert${queryString}`, { method: "POST" }),
 };

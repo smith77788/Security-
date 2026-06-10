@@ -3,7 +3,10 @@ uvicorn[standard]==0.29.0
 sqlalchemy==2.0.30
 pydantic==2.7.1
 apscheduler==3.10.4
-# Optional — needed for live DNS capture (requires CAP_NET_RAW)
+psutil==5.9.8
+ipwhois==1.2.0
+requests==2.32.3
+# Optional — passive packet capture (requires CAP_NET_RAW / root / network_mode: host)
 # scapy==2.5.0
 pytest==8.2.0
 pytest-asyncio==0.23.6
