@@ -109,36 +109,64 @@ def _arp_command() -> list[dict]:
     return results
 
 
-def _ping_one(ip: str) -> bool:
-    try:
-        r = subprocess.run(
-            ["ping", "-c", "1", "-W", "1", ip],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            timeout=3,
-        )
-        return r.returncode == 0
-    except Exception:
-        return False
+def _udp_probe_sweep(subnet: str) -> int:
+    """Send UDP probes to force kernel ARP resolution without root.
 
-
-def _ping_sweep(subnet: str) -> int:
-    """Ping all hosts in subnet in parallel to populate the kernel ARP cache.
-
-    Returns the number of hosts that responded.
-    Does NOT return MAC addresses — those are read from the ARP table afterwards.
-    Limited to /24 or smaller to avoid very long sweeps.
+    Sends a 1-byte UDP packet to each host on port 65535.
+    The kernel must resolve ARP to deliver (or reject) the packet,
+    which populates the neighbour table — even if the target drops it.
+    This requires only SOCK_DGRAM, no CAP_NET_RAW, works on Android.
     """
+    import socket as _socket
+
+    def _probe(ip: str) -> None:
+        try:
+            s = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+            s.settimeout(0.05)
+            s.sendto(b"\x00", (ip, 65535))
+            s.close()
+        except Exception:
+            pass
+
     try:
         net = ipaddress.IPv4Network(subnet, strict=False)
         hosts = [str(h) for h in net.hosts()]
         if len(hosts) > 254:
-            # For larger subnets only sweep a /24 slice
             hosts = hosts[:254]
-        log.info("Ping sweep: probing %d hosts in %s …", len(hosts), subnet)
+        log.info("UDP probe sweep: %d hosts in %s …", len(hosts), subnet)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=50) as pool:
+            list(pool.map(_probe, hosts))
+        log.info("UDP probe sweep complete")
+        return len(hosts)
+    except Exception as e:
+        log.warning("UDP probe sweep error: %s", e)
+        return 0
+
+
+def _ping_sweep(subnet: str) -> int:
+    """Ping sweep fallback (requires ping binary with proper permissions)."""
+
+    def _ping_one(ip: str) -> bool:
+        try:
+            r = subprocess.run(
+                ["ping", "-c", "1", "-W", "1", ip],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                timeout=3,
+            )
+            return r.returncode == 0
+        except Exception:
+            return False
+
+    try:
+        net = ipaddress.IPv4Network(subnet, strict=False)
+        hosts = [str(h) for h in net.hosts()]
+        if len(hosts) > 254:
+            hosts = hosts[:254]
+        log.info("Ping sweep: %d hosts in %s …", len(hosts), subnet)
         with concurrent.futures.ThreadPoolExecutor(max_workers=40) as pool:
             results = list(pool.map(_ping_one, hosts))
         found = sum(results)
-        log.info("Ping sweep complete: %d hosts responded", found)
+        log.info("Ping sweep: %d hosts responded", found)
         return found
     except Exception as e:
         log.warning("Ping sweep error: %s", e)
@@ -195,10 +223,21 @@ def discover_devices(subnet: str = LOCAL_SUBNET) -> list[dict]:
     for entry in _collect_arp():
         found[entry["mac"]] = entry
 
-    # Pass 2: if nothing found, do a ping sweep to populate cache then re-read
+    # Pass 2: if nothing found, do UDP probe sweep (works on Android without root)
     if not found:
-        log.info("ARP cache empty — running ping sweep to discover neighbours")
+        log.info("ARP cache empty — running UDP probe sweep …")
+        _udp_probe_sweep(subnet)
+        import time
+        time.sleep(1)  # let the kernel process ARP responses
+        for entry in _collect_arp():
+            found[entry["mac"]] = entry
+
+    # Pass 3: if still nothing, also try ping (works if ping has proper caps)
+    if not found:
+        log.info("UDP sweep found nothing — trying ping sweep …")
         _ping_sweep(subnet)
+        import time
+        time.sleep(1)
         for entry in _collect_arp():
             found[entry["mac"]] = entry
 
