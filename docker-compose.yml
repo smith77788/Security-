@@ -28,11 +28,15 @@ services:
       - ./data:/app/../data:ro
     ports:
       - "8000:8000"
-    # Uncomment for live DNS capture on the hub's own network:
+    # ── Расширенные сетевые возможности ──────────────────────────────────────
+    # Раскомментируй для:
+    #   - Реальной блокировки устройств через iptables (NET_ADMIN)
+    #   - Пассивного захвата DNS/пакетов (NET_RAW)
+    #   - Сканирования ARP на уровне интерфейса (network_mode: host)
     # network_mode: host
-    # cap_add:
-    #   - NET_RAW
-    #   - NET_ADMIN
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
 
   frontend:
     build: ./frontend

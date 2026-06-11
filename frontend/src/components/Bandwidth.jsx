@@ -64,6 +64,10 @@ export default function Bandwidth() {
     time: (() => {
       try {
         const d = new Date(row.ts);
+        if (hours > 24) {
+          return d.toLocaleDateString("ru", { day: "2-digit", month: "2-digit" }) + " " +
+                 d.toLocaleTimeString("ru", { hour: "2-digit", minute: "2-digit" });
+        }
         return d.toLocaleTimeString("ru", { hour: "2-digit", minute: "2-digit" });
       } catch { return row.ts; }
     })(),
@@ -123,6 +127,9 @@ export default function Bandwidth() {
           <option value={6}>6 часов</option>
           <option value={12}>12 часов</option>
           <option value={24}>24 часа</option>
+          <option value={168}>7 дней</option>
+          <option value={336}>2 недели</option>
+          <option value={720}>30 дней</option>
         </select>
         <button style={{ ...s.pill(false), marginLeft: "auto" }} onClick={load}>Обновить</button>
       </div>
@@ -151,7 +158,7 @@ export default function Bandwidth() {
         <div style={{ ...s.card, textAlign: "center", color: "#475569", padding: 50 }}>Загрузка данных...</div>
       ) : view === "timeline" ? (
         <div style={s.card}>
-          <div style={s.cardTitle}>Трафик по времени (5-мин интервалы)</div>
+          <div style={s.cardTitle}>Трафик по времени ({hours > 24 ? "почасово" : "5-мин интервалы"})</div>
           {chartData.length === 0 ? (
             <div style={s.empty}>Нет данных за выбранный период</div>
           ) : (

@@ -88,14 +88,19 @@ def get_timeline(
     device_mac: Optional[str] = None,
     location_id: Optional[int] = None,
 ) -> list[dict]:
-    """Return bandwidth timeline grouped into 5-minute buckets."""
+    """
+    Возвращает хронологию трафика.
+    hours <= 24  → группировка по 5 минут
+    hours > 24   → группировка по часам
+    """
     from models import BandwidthSample
-    from sqlalchemy import func
 
     since = datetime.utcnow() - timedelta(hours=hours)
     q = db.query(BandwidthSample).filter(BandwidthSample.timestamp >= since)
     if device_mac is not None:
         q = q.filter(BandwidthSample.device_mac == device_mac)
+    else:
+        q = q.filter(BandwidthSample.device_mac == None)  # noqa: E711 — только агрегат интерфейса
     if location_id is not None:
         q = q.filter(BandwidthSample.location_id == location_id)
 
@@ -103,12 +108,14 @@ def get_timeline(
     if not rows:
         return []
 
-    # Bucket into 5-minute intervals
+    use_hourly = hours > 24
     buckets: dict[datetime, dict] = {}
     for row in rows:
-        # Round down to nearest 5 minutes
         ts = row.timestamp.replace(second=0, microsecond=0)
-        ts = ts.replace(minute=(ts.minute // 5) * 5)
+        if use_hourly:
+            ts = ts.replace(minute=0)
+        else:
+            ts = ts.replace(minute=(ts.minute // 5) * 5)
         if ts not in buckets:
             buckets[ts] = {"ts": ts.isoformat(), "bytes_up": 0, "bytes_down": 0}
         buckets[ts]["bytes_up"] += row.bytes_up or 0

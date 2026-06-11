@@ -87,14 +87,13 @@ def list_blocked(db: Session = Depends(get_db)):
 
 @router.post("/{device_id}/block")
 def block_device(device_id: int, body: BlockRequest, db: Session = Depends(get_db)):
-    """Flag a device as blocked. Monitoring-only: generates a critical alert
-    whenever this device is seen on the network. Does not modify router config."""
+    """Блокирует устройство: записывает в БД + применяет правило iptables (если доступно)."""
     dev = db.query(Device).filter(Device.id == device_id).first()
     if not dev:
         raise HTTPException(status_code=404, detail="Device not found")
     existing = db.query(BlockedDevice).filter(BlockedDevice.mac == dev.mac).first()
     if existing:
-        return {"ok": True, "already_blocked": True}
+        return {"ok": True, "already_blocked": True, "firewall": False}
     db.add(BlockedDevice(
         mac=dev.mac, ip=dev.ip,
         reason=body.reason or "Заблокировано вручную",
@@ -102,7 +101,9 @@ def block_device(device_id: int, body: BlockRequest, db: Session = Depends(get_d
         location_id=dev.location_id,
     ))
     db.commit()
-    return {"ok": True}
+    from services.network_blocker import block_mac
+    firewall_ok = block_mac(dev.mac)
+    return {"ok": True, "firewall": firewall_ok}
 
 
 @router.post("/{device_id}/unblock")
@@ -110,6 +111,9 @@ def unblock_device(device_id: int, db: Session = Depends(get_db)):
     dev = db.query(Device).filter(Device.id == device_id).first()
     if not dev:
         raise HTTPException(status_code=404, detail="Device not found")
-    db.query(BlockedDevice).filter(BlockedDevice.mac == dev.mac).delete()
+    mac = dev.mac
+    db.query(BlockedDevice).filter(BlockedDevice.mac == mac).delete()
     db.commit()
+    from services.network_blocker import unblock_mac
+    unblock_mac(mac)
     return {"ok": True}

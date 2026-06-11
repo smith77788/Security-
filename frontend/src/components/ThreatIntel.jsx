@@ -298,11 +298,13 @@ export default function ThreatIntel() {
                   ))
                 )}
               </div>
-              {status?.last_update && (
-                <div style={{ fontSize: 11, color: "#475569" }}>
-                  Последнее обновление: {new Date(status.last_update).toLocaleString("ru")}
-                </div>
-              )}
+              <div style={{ fontSize: 11, color: "#475569", marginTop: 6 }}>
+                {status?.last_update
+                  ? `Обновлено: ${new Date(status.last_update).toLocaleString("ru")}`
+                  : "Загрузка при старте..."}
+                {" · "}
+                <span style={{ color: "#334155" }}>Автообновление каждые 24 ч</span>
+              </div>
               <div style={{ marginTop: 16, padding: 14, background: "#0a0e18", borderRadius: 8, fontSize: 12, color: "#64748b" }}>
                 <div style={{ fontWeight: 600, color: "#94a3b8", marginBottom: 6 }}>Источники данных</div>
                 <ul style={{ margin: 0, paddingLeft: 18, lineHeight: 1.8 }}>

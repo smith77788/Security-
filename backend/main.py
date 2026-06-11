@@ -118,12 +118,26 @@ async def lifespan(app: FastAPI):
             finally:
                 db.close()
 
-        scheduler.add_job(_run_scan,        IntervalTrigger(seconds=SCAN_INTERVAL_SECONDS), id="scan")
-        scheduler.add_job(_run_anomaly,     IntervalTrigger(minutes=5),  id="anomaly")
-        scheduler.add_job(_check_offline,   IntervalTrigger(minutes=1),  id="offline")
-        scheduler.add_job(_run_retention,   IntervalTrigger(hours=24),   id="retention")
-        scheduler.add_job(_sample_bandwidth,IntervalTrigger(minutes=1),  id="bandwidth")
-        scheduler.add_job(_beaconing,       IntervalTrigger(minutes=10), id="beaconing")
+        def _refresh_threat_intel():
+            _load_threat_intel()
+
+        # Синхронизировать iptables с заблокированными устройствами из БД
+        from services.network_blocker import sync_blocks
+        _sync_db = SessionLocal()
+        try:
+            from models import BlockedDevice
+            blocked = [b.mac for b in _sync_db.query(BlockedDevice).all()]
+            sync_blocks(blocked)
+        finally:
+            _sync_db.close()
+
+        scheduler.add_job(_run_scan,             IntervalTrigger(seconds=SCAN_INTERVAL_SECONDS), id="scan")
+        scheduler.add_job(_run_anomaly,          IntervalTrigger(minutes=5),   id="anomaly")
+        scheduler.add_job(_check_offline,        IntervalTrigger(minutes=1),   id="offline")
+        scheduler.add_job(_run_retention,        IntervalTrigger(hours=24),    id="retention")
+        scheduler.add_job(_sample_bandwidth,     IntervalTrigger(minutes=1),   id="bandwidth")
+        scheduler.add_job(_beaconing,            IntervalTrigger(minutes=10),  id="beaconing")
+        scheduler.add_job(_refresh_threat_intel, IntervalTrigger(hours=24),    id="threat_intel")
         scheduler.start()
         log.info("Scheduler started")
 
@@ -193,11 +207,13 @@ app.include_router(ws_router.router)
 def health():
     net = auto_config.get()
     from services.threat_intel import status as ti_status
+    from services.network_blocker import is_available as fw_available
     return {
         "status": "ok",
-        "version": "3.1.0",
+        "version": "3.2.0",
         "demo_mode": DEMO_MODE,
         "dns_capture": DNS_CAPTURE_ENABLED,
+        "firewall_available": fw_available(),
         "network": net,
         "threat_intel": ti_status(),
     }

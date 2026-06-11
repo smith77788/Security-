@@ -106,7 +106,7 @@ def list_connections(
 
 @router.get("/bandwidth/timeline")
 def bandwidth_timeline(
-    hours: int = Query(1, le=24),
+    hours: int = Query(1, le=720),
     device_mac: Optional[str] = Query(None),
     location_id: Optional[int] = Query(None),
     db: Session = Depends(get_db),

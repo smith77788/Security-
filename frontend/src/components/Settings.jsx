@@ -61,11 +61,15 @@ export default function Settings() {
   const [msgErr, setMsgErr] = useState(false);
   const [testing, setTesting] = useState(false);
   const [netInfo, setNetInfo] = useState(null);
+  const [fwAvailable, setFwAvailable] = useState(null);
   const [scanning, setScanning] = useState(false);
 
   const reload = () => api.settings().then(setSettings).catch(console.error);
   const loadNet = useCallback(() => {
-    api.health().then((h) => setNetInfo(h.network)).catch(() => {});
+    api.health().then((h) => {
+      setNetInfo(h.network);
+      setFwAvailable(h.firewall_available ?? false);
+    }).catch(() => {});
   }, []);
   useEffect(() => { reload(); loadNet(); }, [loadNet]);
 
@@ -232,9 +236,20 @@ export default function Settings() {
         ) : (
           <p style={s.note}>Загрузка...</p>
         )}
+        <div style={{ marginTop: 14, display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={{ fontSize: 12, color: "#64748b" }}>Блокировка через iptables:</span>
+          <span style={{
+            fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 4,
+            background: fwAvailable ? "#052e16" : "#1a1a2e",
+            color: fwAvailable ? "#4ade80" : "#64748b",
+            border: `1px solid ${fwAvailable ? "#166534" : "#334155"}`,
+          }}>
+            {fwAvailable === null ? "..." : fwAvailable ? "АКТИВНА" : "НЕТ ПРАВ (только мониторинг)"}
+          </span>
+        </div>
         <p style={s.note}>
-          Система автоматически определяет интерфейс и подсеть при старте.<br />
-          Для захвата DNS-трафика включите DNS-захват и раскомментируйте cap_add в docker-compose.yml.
+          Для включения iptables-блокировки раскомментируй cap_add: [NET_ADMIN, NET_RAW] в docker-compose.yml и перезапусти.<br />
+          Для захвата DNS-трафика включи опцию DNS-захват выше.
         </p>
       </div>
 
