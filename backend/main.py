@@ -53,6 +53,26 @@ async def lifespan(app: FastAPI):
         log.info("Network: interface=%s subnet=%s gateway=%s",
                  net["interface"], net["subnet"], net["gateway"])
 
+        # Первый запуск — создать локацию "Мой дом" если нет ни одной
+        _setup_db = SessionLocal()
+        try:
+            from models import Location
+            if _setup_db.query(Location).count() == 0:
+                _home = Location(
+                    name="Мой дом",
+                    icon="🏠",
+                    color="#3b82f6",
+                    timezone="UTC",
+                    is_online=True,
+                )
+                _setup_db.add(_home)
+                _setup_db.commit()
+                log.info("Создана локация 'Мой дом' (первый запуск)")
+        except Exception as e:
+            log.warning("Ошибка создания локации: %s", e)
+        finally:
+            _setup_db.close()
+
         # Load threat intel on startup (non-blocking)
         import threading
         threading.Thread(

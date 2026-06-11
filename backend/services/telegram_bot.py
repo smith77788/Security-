@@ -58,7 +58,16 @@ ACTIONS_MENU = {
         [{"text": "✅ Прочитать все события", "callback_data": "read_all"}],
         [{"text": "🔄 Обновить фиды угроз", "callback_data": "refresh_intel"}],
         [{"text": "🎯 Скан C2-маяков", "callback_data": "beacon_scan"}],
+        [{"text": "📡 Сканировать сеть сейчас", "callback_data": "scan_now"}],
+        [{"text": "🗑 Очистить все данные", "callback_data": "reset_confirm"}],
         [{"text": "⬅️ Меню", "callback_data": "menu"}],
+    ]
+}
+
+RESET_CONFIRM_MENU = {
+    "inline_keyboard": [
+        [{"text": "⚠️ ДА, удалить все данные", "callback_data": "reset_execute"}],
+        [{"text": "❌ Отмена", "callback_data": "menu"}],
     ]
 }
 
@@ -280,6 +289,50 @@ class TelegramBot:
         finally:
             db.close()
 
+    def _action_scan_now(self):
+        import threading
+        from services.device_scanner import run_scan
+        threading.Thread(target=run_scan, daemon=True).start()
+        return "📡 Сканирование запущено!\nЧерез 15–30 сек нажми «Устройства» для просмотра результатов.", BACK_MENU
+
+    def _action_reset_confirm(self):
+        return (
+            "⚠️ <b>ПОДТВЕРЖДЕНИЕ СБРОСА</b>\n\n"
+            "Это удалит ВСЕ данные: устройства, события, DNS-логи, локации.\n"
+            "Система создаст чистую локацию «Мой дом» и сразу просканирует сеть.\n\n"
+            "Ты уверен?",
+            RESET_CONFIRM_MENU
+        )
+
+    def _action_reset_execute(self):
+        from database import SessionLocal
+        from models import (Device, Connection, Alert, DNSQuery,
+                            BlockedDevice, Location, BandwidthSample, AppSetting)
+        db = SessionLocal()
+        try:
+            for model in [Alert, DNSQuery, Connection, BandwidthSample,
+                          BlockedDevice, Device, Location]:
+                db.query(model).delete()
+            db.commit()
+            # Создаём чистую локацию
+            home = Location(name="Мой дом", icon="🏠", color="#3b82f6",
+                            timezone="UTC", is_online=True)
+            db.add(home)
+            db.commit()
+            log.info("База данных очищена через Telegram-бот")
+        finally:
+            db.close()
+        # Запускаем скан
+        import threading
+        from services.device_scanner import run_scan
+        threading.Thread(target=run_scan, daemon=True).start()
+        return (
+            "✅ <b>Данные очищены!</b>\n\n"
+            "Создана локация «Мой дом».\n"
+            "Сканирование сети запущено — через 30 сек нажми «Устройства».",
+            BACK_MENU
+        )
+
     # ── Dispatch ──────────────────────────────────────────────────────────────
 
     SCREENS = {
@@ -294,19 +347,23 @@ class TelegramBot:
         "read_all": "_action_read_all",
         "refresh_intel": "_action_refresh_intel",
         "beacon_scan": "_action_beacon_scan",
+        "scan_now": "_action_scan_now",
+        "reset_confirm": "_action_reset_confirm",
+        "reset_execute": "_action_reset_execute",
     }
 
     COMMANDS = {
         "/start": "menu", "/menu": "menu", "/status": "status",
         "/devices": "devices", "/alerts": "alerts", "/threats": "threats",
         "/traffic": "traffic", "/new": "new_devices",
+        "/scan": "scan_now", "/reset": "reset_confirm",
     }
 
     def _render(self, key: str):
         if key == "menu":
             return ("<b>🛡 FAMILY SECURITY</b>\nВыберите раздел:", MAIN_MENU)
         if key == "actions":
-            return ("<b>⚙️ ДЕЙСТВИЯ</b>", ACTIONS_MENU)
+            return ("<b>⚙️ ДЕЙСТВИЯ</b>\nЧто сделать?", ACTIONS_MENU)
         method = self.SCREENS.get(key)
         if not method:
             return ("Неизвестная команда. /menu", MAIN_MENU)
@@ -354,13 +411,15 @@ class TelegramBot:
 
     def _set_commands(self):
         self._call("setMyCommands", commands=[
-            {"command": "menu", "description": "Главное меню"},
-            {"command": "status", "description": "Статус системы"},
-            {"command": "alerts", "description": "Последние события"},
+            {"command": "menu",    "description": "Главное меню"},
+            {"command": "status",  "description": "Статус системы"},
             {"command": "devices", "description": "Активные устройства"},
-            {"command": "new", "description": "Новые устройства"},
+            {"command": "alerts",  "description": "Последние события"},
             {"command": "threats", "description": "Угрозы за 24ч"},
+            {"command": "scan",    "description": "Сканировать сеть сейчас"},
+            {"command": "new",     "description": "Новые устройства"},
             {"command": "traffic", "description": "Топ трафика"},
+            {"command": "reset",   "description": "Очистить все данные"},
         ])
 
     def _poll_loop(self):
