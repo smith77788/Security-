@@ -54,11 +54,14 @@ def detect() -> dict:
     gateway: Optional[str] = None
 
     # Get IP + netmask for the chosen interface
-    for addr in psutil.net_if_addrs().get(iface, []):
-        if addr.family == socket.AF_INET and not addr.address.startswith("127."):
-            my_ip = addr.address
-            netmask = addr.netmask
-            break
+    try:
+        for addr in psutil.net_if_addrs().get(iface, []):
+            if addr.family == socket.AF_INET and not addr.address.startswith("127."):
+                my_ip = addr.address
+                netmask = addr.netmask
+                break
+    except Exception:
+        pass
 
     # Derive subnet from my_ip + netmask
     subnet = LOCAL_SUBNET
@@ -70,7 +73,6 @@ def detect() -> dict:
             pass
 
     # Get default gateway
-    gws = psutil.net_if_stats()
     try:
         out = subprocess.check_output(
             ["ip", "route", "show", "default"], text=True, timeout=5

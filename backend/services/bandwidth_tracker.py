@@ -15,13 +15,15 @@ import psutil
 log = logging.getLogger("bandwidth")
 
 
-def _get_iface_counters(interface: str) -> Optional[tuple[int, int]]:
+def _get_iface_counters(interface: str) -> Optional[tuple]:
     """Returns (bytes_sent, bytes_recv) for the given interface."""
     try:
         stats = psutil.net_io_counters(pernic=True)
         if interface in stats:
             s = stats[interface]
             return s.bytes_sent, s.bytes_recv
+    except (PermissionError, OSError):
+        log.debug("psutil net_io_counters недоступен (нет прав на /proc/net/dev) — пропускаем")
     except Exception:
         pass
     return None
