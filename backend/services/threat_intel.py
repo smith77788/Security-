@@ -62,7 +62,8 @@ _lock = threading.RLock()
 _last_update: Optional[datetime] = None
 _stats: dict[str, int] = {}
 
-CACHE_DIR = Path(os.environ.get("THREAT_CACHE_DIR", "/tmp/family-security-intel"))
+_default_cache = Path.home() / ".cache" / "family-security-intel"
+CACHE_DIR = Path(os.environ.get("THREAT_CACHE_DIR", str(_default_cache)))
 CACHE_TTL_HOURS = 24
 
 
