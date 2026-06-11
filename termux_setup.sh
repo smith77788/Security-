@@ -62,11 +62,8 @@ if [ ! -f "$ENV_FILE" ]; then
     # Генерируем случайный JWT_SECRET
     JWT_SECRET=$(python3 -c "import secrets; print(secrets.token_urlsafe(48))")
     sed -i "s/change-me-use-long-random-secret/$JWT_SECRET/" "$ENV_FILE"
-    warn "Создан .env файл. Введи свои данные:"
-    warn "  nano $ENV_FILE"
-    warn "  Измени ADMIN_PASSWORD на свой пароль"
-    echo ""
-    echo "  Telegram уже настроен (токен и chat_id вшиты в скрипт)"
+    sed -i "s/ADMIN_PASSWORD=changeme/ADMIN_PASSWORD=Smile1212+/" "$ENV_FILE"
+    info "Создан .env — пароль и JWT настроены автоматически"
     # Вставляем Telegram credentials
     echo "" >> "$ENV_FILE"
     echo "TELEGRAM_BOT_TOKEN=8904805144:AAEnfZCeUCUmva7svg5MFQPpLjP6Eldq_8w" >> "$ENV_FILE"
