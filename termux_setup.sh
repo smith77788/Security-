@@ -33,18 +33,19 @@ fi
 
 step "4/7 — Установка Python-зависимостей"
 cd "$BACKEND_DIR"
-pip install --upgrade pip
+# В Termux pip нельзя обновлять через pip — используем pkg
+pkg install -y python
 pip install \
-    fastapi==0.111.0 \
-    "uvicorn[standard]==0.29.0" \
-    sqlalchemy==2.0.30 \
-    pydantic==2.7.1 \
-    apscheduler==3.10.4 \
-    psutil==5.9.8 \
-    ipwhois==1.2.0 \
-    requests==2.32.3 \
-    "python-multipart>=0.0.9" \
-    aiofiles
+    fastapi \
+    "uvicorn[standard]" \
+    sqlalchemy \
+    pydantic \
+    apscheduler \
+    psutil \
+    ipwhois \
+    requests \
+    aiofiles \
+    "python-multipart"
 
 step "5/7 — Сборка фронтенда (5-10 минут на первый раз)"
 cd "$FRONTEND_DIR"
