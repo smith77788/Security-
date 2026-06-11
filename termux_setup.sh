@@ -38,7 +38,8 @@ pkg install -y python python-psutil
 # Чистые Python пакеты — через pip
 pip install \
     fastapi \
-    "uvicorn[standard]" \
+    uvicorn \
+    websockets \
     sqlalchemy \
     pydantic \
     apscheduler \
