@@ -33,8 +33,8 @@ fi
 
 step "4/7 — Установка Python-зависимостей"
 cd "$BACKEND_DIR"
-# Пакеты с нативным кодом — ставим через pkg (Termux pre-built)
-pkg install -y python python-psutil
+# Пакеты с нативным кодом + сетевые утилиты — ставим через pkg (Termux pre-built)
+pkg install -y python python-psutil iproute2
 # Чистые Python пакеты — через pip
 pip install \
     "fastapi>=0.100" \

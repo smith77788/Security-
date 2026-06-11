@@ -1,10 +1,16 @@
 """
 Device discovery via ARP table, ping-sweep, and optional nmap.
 Read-only / passive — no exploitation, no credential testing.
-Requires: net-tools (arp) or access to /proc/net/arp.
-Optional: nmap for richer discovery.
+
+Methods tried in order (most to least compatible with Android/Termux):
+  1. ip neigh show     — kernel neighbor table, works on Android without root
+  2. /proc/net/arp     — direct kernel ARP table (may need root on some Android)
+  3. arp -n            — net-tools, often absent on Android
+  4. ping sweep        — populates ARP cache; retries methods 1-3 afterwards
+  5. nmap -sn          — optional, requires install
 """
-import asyncio
+import concurrent.futures
+import ipaddress
 import logging
 import re
 import subprocess
@@ -21,9 +27,47 @@ from utils.oui_lookup import lookup_vendor
 
 log = logging.getLogger("scanner")
 
+_MAC_RE = re.compile(r"([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}")
+
+
+def _ip_neigh_show() -> list[dict]:
+    """Parse `ip neigh show` — works on Android/Termux without root.
+
+    Tries Termux `ip` (iproute2) first, then Android system `/system/bin/ip`.
+    Output format: IP dev IFACE lladdr MAC STATE
+    """
+    results: dict[str, dict] = {}
+    candidates = [
+        ["ip", "neigh", "show"],
+        ["/system/bin/ip", "neigh", "show"],
+    ]
+    for cmd in candidates:
+        try:
+            out = subprocess.check_output(
+                cmd, text=True, timeout=10,
+                stderr=subprocess.DEVNULL,
+            )
+            for line in out.splitlines():
+                parts = line.split()
+                if "lladdr" not in parts or len(parts) < 5:
+                    continue
+                ip = parts[0]
+                mac = parts[parts.index("lladdr") + 1]
+                if _MAC_RE.match(mac):
+                    results[mac.upper()] = {"ip": ip, "mac": mac.upper()}
+            if results:
+                break  # found entries — no need to try next candidate
+        except FileNotFoundError:
+            continue
+        except Exception as e:
+            log.debug("ip neigh show (%s) failed: %s", cmd[0], e)
+    if not results:
+        log.debug("ip neigh show: no entries found")
+    return list(results.values())
+
 
 def _read_proc_arp() -> list[dict]:
-    """Read /proc/net/arp — no special privileges needed."""
+    """Read /proc/net/arp — may be restricted on Android without root."""
     results = []
     try:
         with open("/proc/net/arp") as f:
@@ -35,8 +79,10 @@ def _read_proc_arp() -> list[dict]:
                 if mac == "00:00:00:00:00:00":
                     continue
                 results.append({"ip": ip, "mac": mac.upper()})
+    except PermissionError:
+        log.debug("/proc/net/arp: permission denied (normal on Android)")
     except Exception as e:
-        log.warning("Cannot read /proc/net/arp: %s", e)
+        log.debug("Cannot read /proc/net/arp: %s", e)
     return results
 
 
@@ -44,19 +90,59 @@ def _arp_command() -> list[dict]:
     """Fallback: parse `arp -n` output."""
     results = []
     try:
-        out = subprocess.check_output(["arp", "-n"], text=True, timeout=10)
+        out = subprocess.check_output(
+            ["arp", "-n"], text=True, timeout=10,
+            stderr=subprocess.DEVNULL,
+        )
         for line in out.splitlines()[1:]:
             parts = line.split()
             if len(parts) < 3:
                 continue
             ip = parts[0]
             mac = parts[2]
-            if not re.match(r"([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}", mac):
-                continue
-            results.append({"ip": ip, "mac": mac.upper()})
+            if _MAC_RE.match(mac):
+                results.append({"ip": ip, "mac": mac.upper()})
+    except FileNotFoundError:
+        log.debug("arp command not available")
     except Exception as e:
-        log.warning("arp command failed: %s", e)
+        log.debug("arp command failed: %s", e)
     return results
+
+
+def _ping_one(ip: str) -> bool:
+    try:
+        r = subprocess.run(
+            ["ping", "-c", "1", "-W", "1", ip],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=3,
+        )
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+def _ping_sweep(subnet: str) -> int:
+    """Ping all hosts in subnet in parallel to populate the kernel ARP cache.
+
+    Returns the number of hosts that responded.
+    Does NOT return MAC addresses — those are read from the ARP table afterwards.
+    Limited to /24 or smaller to avoid very long sweeps.
+    """
+    try:
+        net = ipaddress.IPv4Network(subnet, strict=False)
+        hosts = [str(h) for h in net.hosts()]
+        if len(hosts) > 254:
+            # For larger subnets only sweep a /24 slice
+            hosts = hosts[:254]
+        log.info("Ping sweep: probing %d hosts in %s …", len(hosts), subnet)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=40) as pool:
+            results = list(pool.map(_ping_one, hosts))
+        found = sum(results)
+        log.info("Ping sweep complete: %d hosts responded", found)
+        return found
+    except Exception as e:
+        log.warning("Ping sweep error: %s", e)
+        return 0
 
 
 def _nmap_scan(subnet: str) -> list[dict]:
@@ -65,7 +151,7 @@ def _nmap_scan(subnet: str) -> list[dict]:
     try:
         out = subprocess.check_output(
             ["nmap", "-sn", "--host-timeout", "5s", subnet],
-            text=True, timeout=60, stderr=subprocess.DEVNULL
+            text=True, timeout=60, stderr=subprocess.DEVNULL,
         )
         current_ip = None
         for line in out.splitlines():
@@ -76,10 +162,22 @@ def _nmap_scan(subnet: str) -> list[dict]:
             if m_mac and current_ip:
                 results.append({"ip": current_ip, "mac": m_mac.group(1).upper()})
     except FileNotFoundError:
-        log.info("nmap not installed — skipping nmap scan")
+        log.debug("nmap not installed — skipping")
     except Exception as e:
-        log.warning("nmap scan failed: %s", e)
+        log.debug("nmap scan failed: %s", e)
     return results
+
+
+def _collect_arp() -> list[dict]:
+    """Try all ARP-table readers and return combined unique results."""
+    found: dict[str, dict] = {}
+    for entry in _ip_neigh_show():
+        found[entry["mac"]] = entry
+    for entry in _read_proc_arp():
+        found.setdefault(entry["mac"], entry)
+    for entry in _arp_command():
+        found.setdefault(entry["mac"], entry)
+    return list(found.values())
 
 
 def _resolve_hostname(ip: str) -> Optional[str]:
@@ -93,12 +191,18 @@ def discover_devices(subnet: str = LOCAL_SUBNET) -> list[dict]:
     """Collect devices from all available sources and deduplicate by MAC."""
     found: dict[str, dict] = {}
 
-    for entry in _read_proc_arp():
+    # Pass 1: read existing ARP/neighbor cache
+    for entry in _collect_arp():
         found[entry["mac"]] = entry
 
-    for entry in _arp_command():
-        found.setdefault(entry["mac"], entry)
+    # Pass 2: if nothing found, do a ping sweep to populate cache then re-read
+    if not found:
+        log.info("ARP cache empty — running ping sweep to discover neighbours")
+        _ping_sweep(subnet)
+        for entry in _collect_arp():
+            found[entry["mac"]] = entry
 
+    # Pass 3: nmap as last resort (optional, requires install)
     for entry in _nmap_scan(subnet):
         found.setdefault(entry["mac"], entry)
 
