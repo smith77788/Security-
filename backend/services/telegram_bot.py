@@ -43,6 +43,7 @@ def _fmt_bytes(b) -> str:
 
 MAIN_MENU = {
     "inline_keyboard": [
+        [{"text": "🏠 Моя сеть", "callback_data": "my_network"}],
         [{"text": "📊 Статус", "callback_data": "status"},
          {"text": "🔔 События", "callback_data": "alerts"}],
         [{"text": "📡 Устройства", "callback_data": "devices"},
@@ -81,6 +82,7 @@ class TelegramBot:
         self._offset = 0
         self._token = ""
         self._chat_id = ""
+        self._waiting_for: dict = {}   # chat_id → {"action": str, "data": dict}
 
     # ── Telegram API helpers ──────────────────────────────────────────────────
 
@@ -251,6 +253,80 @@ class TelegramBot:
         finally:
             db.close()
 
+    # ── Моя сеть ─────────────────────────────────────────────────────────────
+
+    def _screen_my_network(self):
+        from database import SessionLocal
+        from models import Location, Device
+        from services.auto_config import get as net_cfg
+        db = SessionLocal()
+        try:
+            loc = db.query(Location).first()
+            total = db.query(Device).count()
+            active = db.query(Device).filter(Device.is_active == True).count()  # noqa: E712
+            new = db.query(Device).filter(Device.is_new == True).count()        # noqa: E712
+        finally:
+            db.close()
+
+        net = net_cfg()
+        loc_name = loc.name if loc else "Не настроено"
+        loc_id = loc.id if loc else None
+
+        lines = [
+            f"<b>🏠 МОЯ СЕТЬ</b>\n",
+            f"📍 Название: <b>{_esc(loc_name)}</b>",
+            f"🌐 Интерфейс: <code>{_esc(net.get('interface', '?'))}</code>",
+            f"📶 Мой IP: <code>{_esc(net.get('my_ip', '?'))}</code>",
+            f"🔀 Подсеть: <code>{_esc(net.get('subnet', '?'))}</code>",
+            f"🚪 Роутер: <code>{_esc(net.get('gateway', '?'))}</code>",
+            f"\n📱 Устройств: <b>{total}</b> (активных: {active}, новых: {new})",
+        ]
+
+        kb = {"inline_keyboard": [
+            [{"text": "✏️ Переименовать сеть", "callback_data": f"rename_start:{loc_id}"}],
+            [{"text": "📡 Сканировать сейчас", "callback_data": "scan_now"}],
+            [{"text": "⬅️ Меню", "callback_data": "menu"}],
+        ]}
+        return "\n".join(lines), kb
+
+    def _action_rename_start(self, loc_id: str):
+        from database import SessionLocal
+        from models import Location
+        db = SessionLocal()
+        try:
+            loc = db.query(Location).filter(Location.id == int(loc_id)).first()
+            current = loc.name if loc else "?"
+        finally:
+            db.close()
+        # Сохраняем ожидание ответа
+        self._waiting_for[self._chat_id] = {"action": "rename", "loc_id": loc_id}
+        return (
+            f"✏️ Текущее название: <b>{_esc(current)}</b>\n\n"
+            f"Введи новое название сети (например: Квартира, Дача, Офис):\n"
+            f"<i>Отправь /отмена чтобы не менять</i>",
+            None
+        )
+
+    def _handle_rename_finish(self, chat_id: str, new_name: str, loc_id: str):
+        from database import SessionLocal
+        from models import Location
+        db = SessionLocal()
+        try:
+            loc = db.query(Location).filter(Location.id == int(loc_id)).first()
+            if loc:
+                old_name = loc.name
+                loc.name = new_name.strip()[:64]
+                db.commit()
+                log.info("Локация #%s переименована: %s → %s", loc_id, old_name, loc.name)
+                return (
+                    f"✅ Сеть переименована!\n\n"
+                    f"<b>{_esc(old_name)}</b> → <b>{_esc(loc.name)}</b>",
+                    MAIN_MENU
+                )
+            return "❌ Локация не найдена", MAIN_MENU
+        finally:
+            db.close()
+
     # ── Actions ───────────────────────────────────────────────────────────────
 
     def _action_read_all(self):
@@ -336,14 +412,15 @@ class TelegramBot:
     # ── Dispatch ──────────────────────────────────────────────────────────────
 
     SCREENS = {
-        "menu": None,  # special-cased
+        "menu": None,
+        "my_network": "_screen_my_network",
         "status": "_screen_status",
         "alerts": "_screen_alerts",
         "devices": "_screen_devices",
         "new_devices": "_screen_new_devices",
         "threats": "_screen_threats",
         "traffic": "_screen_traffic",
-        "actions": None,  # special-cased
+        "actions": None,
         "read_all": "_action_read_all",
         "refresh_intel": "_action_refresh_intel",
         "beacon_scan": "_action_beacon_scan",
@@ -357,6 +434,8 @@ class TelegramBot:
         "/devices": "devices", "/alerts": "alerts", "/threats": "threats",
         "/traffic": "traffic", "/new": "new_devices",
         "/scan": "scan_now", "/reset": "reset_confirm",
+        "/сеть": "my_network", "/network": "my_network",
+        "/отмена": "menu", "/cancel": "menu",
     }
 
     def _render(self, key: str):
@@ -364,6 +443,10 @@ class TelegramBot:
             return ("<b>🛡 FAMILY SECURITY</b>\nВыберите раздел:", MAIN_MENU)
         if key == "actions":
             return ("<b>⚙️ ДЕЙСТВИЯ</b>\nЧто сделать?", ACTIONS_MENU)
+        # Ключи с параметром: "rename_start:1"
+        if key.startswith("rename_start:"):
+            loc_id = key.split(":", 1)[1]
+            return self._action_rename_start(loc_id)
         method = self.SCREENS.get(key)
         if not method:
             return ("Неизвестная команда. /menu", MAIN_MENU)
@@ -392,9 +475,20 @@ class TelegramBot:
         if not chat_id or not text:
             return
         if chat_id != self._chat_id:
-            self._send(chat_id, "⛔ Доступ запрещён. Этот бот обслуживает только владельца системы.")
-            log.warning("Unauthorized Telegram access from chat %s", chat_id)
+            self._send(chat_id, "⛔ Доступ запрещён.")
             return
+
+        # Ожидаем ввод от пользователя (диалог переименования)
+        waiting = self._waiting_for.get(chat_id)
+        if waiting and not text.startswith("/"):
+            self._waiting_for.pop(chat_id, None)
+            if waiting["action"] == "rename":
+                text_out, kb = self._handle_rename_finish(chat_id, text, waiting["loc_id"])
+                self._send(chat_id, text_out, kb)
+                return
+
+        # Обычная команда
+        self._waiting_for.pop(chat_id, None)
         cmd = text.split("@")[0].split()[0].lower()
         key = self.COMMANDS.get(cmd, "menu")
         text_out, kb = self._render(key)
@@ -412,11 +506,12 @@ class TelegramBot:
     def _set_commands(self):
         self._call("setMyCommands", commands=[
             {"command": "menu",    "description": "Главное меню"},
+            {"command": "network", "description": "Моя сеть — IP, имя, устройства"},
             {"command": "status",  "description": "Статус системы"},
             {"command": "devices", "description": "Активные устройства"},
+            {"command": "scan",    "description": "Сканировать сеть сейчас"},
             {"command": "alerts",  "description": "Последние события"},
             {"command": "threats", "description": "Угрозы за 24ч"},
-            {"command": "scan",    "description": "Сканировать сеть сейчас"},
             {"command": "new",     "description": "Новые устройства"},
             {"command": "traffic", "description": "Топ трафика"},
             {"command": "reset",   "description": "Очистить все данные"},
