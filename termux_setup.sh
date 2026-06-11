@@ -33,15 +33,15 @@ fi
 
 step "4/7 — Установка Python-зависимостей"
 cd "$BACKEND_DIR"
-# В Termux pip нельзя обновлять через pip — используем pkg
-pkg install -y python
+# Пакеты с нативным кодом — ставим через pkg (Termux pre-built)
+pkg install -y python python-psutil
+# Чистые Python пакеты — через pip
 pip install \
     fastapi \
     "uvicorn[standard]" \
     sqlalchemy \
     pydantic \
     apscheduler \
-    psutil \
     ipwhois \
     requests \
     aiofiles \
