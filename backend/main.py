@@ -1,10 +1,13 @@
 import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
@@ -201,6 +204,21 @@ for r in [auth_router, devices, dns, alerts, dashboard, assistant,
           settings_router, locations, ingest, network_map, intel]:
     app.include_router(r.router)
 app.include_router(ws_router.router)
+
+# Раздача собранного React-приложения (для запуска без Docker/nginx, например в Termux)
+_STATIC_DIR = Path(__file__).parent / "static"
+if _STATIC_DIR.exists():
+    app.mount("/assets", StaticFiles(directory=str(_STATIC_DIR / "assets")), name="assets")
+
+    @app.get("/{full_path:path}")
+    async def serve_spa(full_path: str, request: Request):
+        """Все не-API пути → index.html (SPA routing)."""
+        if full_path.startswith("api"):
+            return JSONResponse(status_code=404, content={"detail": "Not found"})
+        index = _STATIC_DIR / "index.html"
+        if index.exists():
+            return FileResponse(str(index))
+        return JSONResponse(status_code=404, content={"detail": "Frontend not built"})
 
 
 @app.get("/api/health")
