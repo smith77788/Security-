@@ -118,6 +118,7 @@ ACTIONS_MENU = {
         [{"text": "🔄 Обновить фиды угроз", "callback_data": "refresh_intel"}],
         [{"text": "🎯 Скан C2-маяков", "callback_data": "beacon_scan"}],
         [{"text": "📡 Сканировать сеть сейчас", "callback_data": "scan_now"}],
+        [{"text": "📡 Настроить OpenWrt роутер", "callback_data": "openwrt_setup"}],
         [{"text": "🗑 Очистить все данные", "callback_data": "reset_confirm"}],
         [{"text": "⬅️ Меню", "callback_data": "menu"}],
     ]
@@ -504,6 +505,137 @@ class TelegramBot:
         ]}
         return "\n".join(lines), kb
 
+    def _screen_openwrt_status(self):
+        from services.openwrt_client import test_connection, _cfg, get_public_key
+        from services.syslog_server import get_port
+        from database import SessionLocal
+        from models import AppSetting, DNSQuery, Device
+
+        db = SessionLocal()
+        try:
+            row = db.query(AppSetting).filter(AppSetting.key == "openwrt_host").first()
+            host = (row.value if row else "") or _cfg.get("host", "")
+            dns_count = db.query(DNSQuery).count()
+            # Count devices with real MACs (not fake 02:00:...)
+            real_devs = db.query(Device).filter(
+                ~Device.mac.like("02:00:%")
+            ).count()
+        finally:
+            db.close()
+
+        if not host:
+            return self._action_openwrt_setup_start()
+
+        ok, msg = test_connection()
+        lines = [
+            "<b>📡 OPENWRT РОУТЕР</b>\n",
+            f"Хост: <code>{_esc(host)}</code>",
+            f"Статус: {msg}",
+            f"\nDNS-запросов в базе: <b>{dns_count}</b>",
+            f"Устройств с реальными MAC: <b>{real_devs}</b>",
+            f"Syslog порт: <b>{get_port()}</b>",
+        ]
+        kb = {"inline_keyboard": [
+            [{"text": "🔄 Тест соединения", "callback_data": "openwrt_test"}],
+            [{"text": "📋 Команды для роутера", "callback_data": "openwrt_commands"}],
+            [{"text": "⚙️ Изменить IP роутера", "callback_data": "openwrt_setup"}],
+            [{"text": "⬅️ Меню", "callback_data": "menu"}],
+        ]}
+        return "\n".join(lines), kb
+
+    def _action_openwrt_setup_start(self):
+        self._waiting_for[self._chat_id] = {"action": "openwrt_host"}
+        return (
+            "📡 <b>Настройка OpenWrt роутера</b>\n\n"
+            "Введи IP-адрес роутера (обычно 192.168.1.1):\n\n"
+            "<i>Это нужно один раз. После настройки система будет видеть:\n"
+            "• Реальные MAC-адреса всех устройств\n"
+            "• DNS-запросы каждого устройства\n"
+            "• Сайты в реальном времени\n\n"
+            "Отправь /отмена чтобы выйти</i>",
+            None,
+        )
+
+    def _handle_openwrt_host(self, host: str):
+        host = host.strip()
+        # Basic IP/hostname validation
+        import re
+        if not re.match(r"^[\d\.]+$|^[a-zA-Z0-9\-\.]+$", host):
+            return "❌ Неверный формат IP. Введи что-то вроде 192.168.1.1", None
+        from services.openwrt_client import save_to_settings, configure, get_public_key
+        from services.auto_config import get as net_cfg
+        save_to_settings(host)
+        configure(host=host)
+        pub_key = get_public_key()
+        net = net_cfg()
+        phone_ip = net.get("my_ip", "192.168.1.104")
+        return (
+            f"✅ Роутер сохранён: <code>{_esc(host)}</code>\n\n"
+            f"<b>Теперь выполни эти команды на роутере</b>\n"
+            f"(через SSH из Termux или через LuCI → System → Terminal):\n\n"
+            f"<code>ssh root@{_esc(host)}</code>\n\n"
+            f"Затем вставь команды — нажми кнопку ниже:",
+            {"inline_keyboard": [
+                [{"text": "📋 Показать команды для роутера", "callback_data": "openwrt_commands"}],
+                [{"text": "🔄 Проверить соединение", "callback_data": "openwrt_test"}],
+                [{"text": "⬅️ Меню", "callback_data": "menu"}],
+            ]},
+        )
+
+    def _action_openwrt_commands(self):
+        from services.openwrt_client import generate_router_setup_commands, _cfg, get_public_key
+        from services.auto_config import get as net_cfg
+        from services.syslog_server import get_port
+        from database import SessionLocal
+        from models import AppSetting
+        db = SessionLocal()
+        try:
+            row = db.query(AppSetting).filter(AppSetting.key == "openwrt_host").first()
+            host = (row.value if row else "") or _cfg.get("host", "192.168.1.1")
+        finally:
+            db.close()
+        net = net_cfg()
+        phone_ip = net.get("my_ip", "?")
+        cmds = generate_router_setup_commands(host, phone_ip, get_port())
+        return (
+            f"<b>📋 Команды для роутера</b>\n\n"
+            f"Подключись к роутеру: <code>ssh root@{_esc(host)}</code>\n"
+            f"Потом вставь:\n\n"
+            f"<pre>{_esc(cmds)}</pre>",
+            {"inline_keyboard": [
+                [{"text": "🔄 Тест соединения", "callback_data": "openwrt_test"}],
+                [{"text": "⬅️ Назад", "callback_data": "openwrt_status"}],
+            ]},
+        )
+
+    def _action_openwrt_test(self):
+        from services.openwrt_client import test_connection, _cfg, start as ow_start
+        from database import SessionLocal
+        from models import AppSetting
+        db = SessionLocal()
+        try:
+            row = db.query(AppSetting).filter(AppSetting.key == "openwrt_host").first()
+            host = (row.value if row else "") or _cfg.get("host", "")
+        finally:
+            db.close()
+        if not host:
+            return "❌ Роутер не настроен. Нажми «Настроить OpenWrt»", BACK_MENU
+        ok, msg = test_connection()
+        if ok:
+            ow_start()  # ensure polling is running
+        return (
+            f"{msg}\n\n"
+            + ("Опрос запущен — данные появятся через ~60 сек." if ok else
+               "Убедись что:\n"
+               "• IP роутера верный\n"
+               "• SSH включён на роутере (обычно включён по умолчанию)\n"
+               "• Ключ добавлен командами выше"),
+            {"inline_keyboard": [
+                [{"text": "📋 Команды для роутера", "callback_data": "openwrt_commands"}],
+                [{"text": "⬅️ Назад", "callback_data": "openwrt_status"}],
+            ]},
+        )
+
     def _action_name_device_start(self, mac: str):
         from database import SessionLocal
         from models import Device
@@ -683,6 +815,10 @@ class TelegramBot:
         "scan_now": "_action_scan_now",
         "reset_confirm": "_action_reset_confirm",
         "reset_execute": "_action_reset_execute",
+        "openwrt_status": None,
+        "openwrt_setup": None,
+        "openwrt_commands": None,
+        "openwrt_test": None,
     }
 
     COMMANDS = {
@@ -711,6 +847,14 @@ class TelegramBot:
         if key.startswith("dev_detail:"):
             mac = key.split(":", 1)[1]
             return self._screen_device_detail(mac)
+        if key == "openwrt_status":
+            return self._screen_openwrt_status()
+        if key == "openwrt_setup":
+            return self._action_openwrt_setup_start()
+        if key == "openwrt_commands":
+            return self._action_openwrt_commands()
+        if key == "openwrt_test":
+            return self._action_openwrt_test()
         method = self.SCREENS.get(key)
         if not method:
             return ("Неизвестная команда. /menu", MAIN_MENU)
@@ -746,14 +890,17 @@ class TelegramBot:
         waiting = self._waiting_for.get(chat_id)
         if waiting and not text.startswith("/"):
             self._waiting_for.pop(chat_id, None)
-            if waiting["action"] == "rename":
+            action = waiting.get("action")
+            if action == "rename":
                 text_out, kb = self._handle_rename_finish(chat_id, text, waiting["loc_id"])
-                self._send(chat_id, text_out, kb)
-                return
-            if waiting["action"] == "name_device":
+            elif action == "name_device":
                 text_out, kb = self._handle_name_device_finish(chat_id, text, waiting["mac"])
-                self._send(chat_id, text_out, kb)
-                return
+            elif action == "openwrt_host":
+                text_out, kb = self._handle_openwrt_host(text)
+            else:
+                text_out, kb = "❓ Неизвестный диалог", MAIN_MENU
+            self._send(chat_id, text_out, kb)
+            return
 
         # Обычная команда
         self._waiting_for.pop(chat_id, None)

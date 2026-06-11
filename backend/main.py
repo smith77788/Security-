@@ -14,6 +14,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 from config import (
     DEMO_MODE, CORS_ORIGINS, SCAN_INTERVAL_SECONDS,
     DNS_CAPTURE_ENABLED, ADMIN_PASSWORD,
+    OPENWRT_HOST, OPENWRT_SYSLOG_PORT,
 )
 from database import init_db, SessionLocal
 from services.realtime import manager
@@ -82,6 +83,15 @@ async def lifespan(app: FastAPI):
         # Initial device scan
         from services.device_scanner import run_scan
         run_scan()
+
+        # OpenWrt router integration (syslog + SSH polling)
+        from services import syslog_server, openwrt_client
+        syslog_server.start(OPENWRT_SYSLOG_PORT)
+        if openwrt_client.load_from_settings() or OPENWRT_HOST:
+            if OPENWRT_HOST:
+                openwrt_client.configure(host=OPENWRT_HOST)
+            openwrt_client.start()
+            log.info("OpenWrt client started")
 
         # Start deep packet monitor if available
         if DNS_CAPTURE_ENABLED:

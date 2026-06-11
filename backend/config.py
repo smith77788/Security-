@@ -31,3 +31,9 @@ SUSPICIOUS_DOMAINS_FILE = str(DATA_DIR / "suspicious_domains.txt")
 OUI_FILE = str(DATA_DIR / "oui.txt")
 
 CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:5173,http://localhost:3000").split(",")
+
+# OpenWrt router integration (optional)
+OPENWRT_HOST     = os.getenv("OPENWRT_HOST", "")
+OPENWRT_USER     = os.getenv("OPENWRT_USER", "root")
+OPENWRT_PORT     = int(os.getenv("OPENWRT_PORT", "22"))
+OPENWRT_SYSLOG_PORT = int(os.getenv("OPENWRT_SYSLOG_PORT", "5514"))
