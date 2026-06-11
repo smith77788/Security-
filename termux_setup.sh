@@ -37,11 +37,11 @@ cd "$BACKEND_DIR"
 pkg install -y python python-psutil
 # Чистые Python пакеты — через pip
 pip install \
-    fastapi \
+    "fastapi>=0.100" \
     uvicorn \
-    websockets \
+    "websockets>=12.0" \
     sqlalchemy \
-    pydantic \
+    "pydantic>=1.10,<2.0" \
     apscheduler \
     ipwhois \
     requests \

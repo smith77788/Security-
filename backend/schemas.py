@@ -33,7 +33,8 @@ class LocationOut(BaseModel):
     is_online: bool
     created_at: datetime
 
-    model_config = {"from_attributes": True}
+    class Config:
+        orm_mode = True
 
 
 class LocationSummary(BaseModel):
@@ -80,7 +81,8 @@ class DeviceOut(DeviceBase):
     is_new: bool
     is_active: bool
 
-    model_config = {"from_attributes": True}
+    class Config:
+        orm_mode = True
 
 
 # ── DNS ───────────────────────────────────────────────────────────────────────
@@ -94,7 +96,8 @@ class DNSQueryOut(BaseModel):
     query_type: str
     timestamp: datetime
 
-    model_config = {"from_attributes": True}
+    class Config:
+        orm_mode = True
 
 
 class DomainStat(BaseModel):
@@ -124,7 +127,8 @@ class AlertOut(BaseModel):
     timestamp: datetime
     is_read: bool
 
-    model_config = {"from_attributes": True}
+    class Config:
+        orm_mode = True
 
 
 # ── Dashboard / Score ─────────────────────────────────────────────────────────
@@ -159,7 +163,8 @@ class SettingOut(BaseModel):
     value: str
     updated_at: datetime
 
-    model_config = {"from_attributes": True}
+    class Config:
+        orm_mode = True
 
 
 class SettingUpdate(BaseModel):
@@ -191,7 +196,7 @@ class IngestPayload(BaseModel):
 # ── Real-time WebSocket events ────────────────────────────────────────────────
 
 class WSEvent(BaseModel):
-    type: str                          # alert | new_device | score_update | location_status | ping
+    type: str
     location_id: Optional[int] = None
     location_name: Optional[str] = None
     payload: dict = {}
