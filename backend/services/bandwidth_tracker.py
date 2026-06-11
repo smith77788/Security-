@@ -126,6 +126,30 @@ def get_timeline(
     return sorted(buckets.values(), key=lambda x: x["ts"])
 
 
+def get_interface_delta(db, hours: int = 1, location_id=None) -> Optional[dict]:
+    """Total traffic delta on the interface for the last N hours."""
+    from models import BandwidthSample
+    since = datetime.utcnow() - timedelta(hours=hours)
+    samples = (
+        db.query(BandwidthSample)
+        .filter(
+            BandwidthSample.device_mac == None,  # noqa: E711 — interface-level rows
+            BandwidthSample.timestamp >= since,
+        )
+        .order_by(BandwidthSample.timestamp)
+        .all()
+    )
+    if len(samples) < 2:
+        return None
+    first, last = samples[0], samples[-1]
+    return {
+        "bytes_up":   max(0, last.bytes_up   - first.bytes_up),
+        "bytes_down": max(0, last.bytes_down  - first.bytes_down),
+        "samples":    len(samples),
+        "hours":      hours,
+    }
+
+
 def get_top_consumers(
     db,
     minutes: int = 60,

@@ -106,6 +106,8 @@ MAIN_MENU = {
          {"text": "🆕 Новые", "callback_data": "new_devices"}],
         [{"text": "🛡 Угрозы", "callback_data": "threats"},
          {"text": "📈 Трафик", "callback_data": "traffic"}],
+        [{"text": "🔌 Соединения", "callback_data": "connections"},
+         {"text": "🌐 DNS", "callback_data": "dns"}],
         [{"text": "⚙️ Действия", "callback_data": "actions"}],
     ]
 }
@@ -236,8 +238,10 @@ class TelegramBot:
                 icon, label = _device_display(d, gateway)
                 badge = " 🆕" if d.is_new else ""
                 lines.append(f"{icon} <b>{_esc(label)}</b>{badge}  <code>{_esc(d.ip)}</code>")
-                btn_text = f"✏️ {d.friendly_name or d.ip}"
-                btn_rows.append([{"text": btn_text, "callback_data": f"name_dev:{d.mac}"}])
+                btn_rows.append([
+                    {"text": f"✏️ {d.friendly_name or d.ip}", "callback_data": f"name_dev:{d.mac}"},
+                    {"text": "ℹ️", "callback_data": f"dev_detail:{d.mac}"},
+                ])
 
             lines.append("\n<i>Нажми ✏️ чтобы назвать устройство</i>")
             btn_rows.append([{"text": "⬅️ Меню", "callback_data": "menu"}])
@@ -302,19 +306,165 @@ class TelegramBot:
 
     def _screen_traffic(self):
         from database import SessionLocal
-        from services.bandwidth_tracker import get_top_consumers
+        from services.bandwidth_tracker import get_top_consumers, get_interface_delta
         db = SessionLocal()
         try:
+            delta = get_interface_delta(db, hours=1)
             rows = get_top_consumers(db, minutes=60)
-            if not rows:
-                return "Нет данных о трафике за последний час", BACK_MENU
-            lines = ["<b>📈 ТРАФИК</b> (топ за час)\n"]
-            for r in rows[:8]:
+
+            if not delta and not rows:
+                return (
+                    "📈 <b>ТРАФИК</b>\n\n"
+                    "Данных пока нет — счётчики собираются каждую минуту.\n"
+                    "Подожди 2–3 минуты и повтори.",
+                    BACK_MENU
+                )
+
+            lines = ["<b>📈 ТРАФИК</b>\n"]
+            if delta:
                 lines.append(
-                    f"• {_esc(r['name'])}\n"
-                    f"   ↑ {_fmt_bytes(r['bytes_up'])} · ↓ {_fmt_bytes(r['bytes_down'])}"
+                    f"🌐 Весь интерфейс за 1 ч:\n"
+                    f"   ↑ {_fmt_bytes(delta['bytes_up'])}  "
+                    f"↓ {_fmt_bytes(delta['bytes_down'])}\n"
+                )
+            if rows:
+                lines.append("Топ устройств:")
+                for r in rows[:8]:
+                    lines.append(
+                        f"• {_esc(r['name'])}\n"
+                        f"   ↑ {_fmt_bytes(r['bytes_up'])} · ↓ {_fmt_bytes(r['bytes_down'])}"
+                    )
+            else:
+                lines.append(
+                    "<i>Детальная статистика по устройствам появится\n"
+                    "когда в сети зафиксируются соединения.</i>"
                 )
             return "\n".join(lines), BACK_MENU
+        finally:
+            db.close()
+
+    def _screen_connections(self):
+        """Active TCP connections from THIS monitoring device (/proc/net/tcp)."""
+        import socket as _sock
+        conns: dict[str, int] = {}
+        for path in ("/proc/net/tcp", "/proc/net/tcp6"):
+            try:
+                with open(path) as f:
+                    for line in f.readlines()[1:]:
+                        parts = line.split()
+                        if len(parts) < 4 or parts[3] != "01":  # 01 = ESTABLISHED
+                            continue
+                        rem = parts[2]
+                        ip_hex, port_hex = rem.split(":")
+                        port = int(port_hex, 16)
+                        if len(ip_hex) == 8:  # IPv4
+                            n = int(ip_hex, 16)
+                            ip = f"{n&0xFF}.{(n>>8)&0xFF}.{(n>>16)&0xFF}.{(n>>24)&0xFF}"
+                            if ip.startswith(("127.", "192.168.", "10.", "172.")):
+                                continue  # skip local
+                            try:
+                                host = _sock.gethostbyaddr(ip)[0]
+                            except Exception:
+                                host = ip
+                            conns[host] = port
+            except Exception:
+                pass
+        if not conns:
+            return (
+                "🔌 <b>СОЕДИНЕНИЯ МОНИТОРА</b>\n\n"
+                "Нет активных внешних TCP-соединений.\n\n"
+                "<i>Здесь видны только соединения самого телефона-монитора.\n"
+                "Для мониторинга других устройств нужен доступ к роутеру.</i>",
+                BACK_MENU
+            )
+        lines = [f"<b>🔌 СОЕДИНЕНИЯ МОНИТОРА</b> ({len(conns)})\n",
+                 "<i>Активные внешние TCP с этого устройства:</i>\n"]
+        for host, port in list(conns.items())[:15]:
+            lines.append(f"• <code>{_esc(host)}</code> :{port}")
+        return "\n".join(lines), BACK_MENU
+
+    def _screen_dns(self):
+        from database import SessionLocal
+        from models import DNSQuery
+        db = SessionLocal()
+        try:
+            total = db.query(DNSQuery).count()
+            if total == 0:
+                return (
+                    "🌐 <b>DNS-ЗАПРОСЫ</b>\n\n"
+                    "Записей нет — DNS-перехват не активен.\n\n"
+                    "<b>Чтобы видеть сайты всех устройств</b>, нужно одно из:\n"
+                    "• Raspberry Pi как шлюз сети (~$35)\n"
+                    "• Настроить роутер использовать этот телефон как DNS\n"
+                    "• Телефон как точка доступа (все девайсы через него)\n\n"
+                    "<i>В текущей конфигурации телефон — клиент сети,\n"
+                    "а не шлюз, поэтому чужой трафик не виден.</i>",
+                    BACK_MENU
+                )
+            from datetime import datetime, timedelta
+            since = datetime.utcnow() - timedelta(hours=24)
+            rows = (db.query(DNSQuery)
+                    .filter(DNSQuery.timestamp >= since)
+                    .order_by(DNSQuery.timestamp.desc())
+                    .limit(20).all())
+            lines = [f"<b>🌐 DNS-ЗАПРОСЫ</b> (за 24ч, всего: {total})\n"]
+            seen = {}
+            for q in rows:
+                key = q.domain
+                if key not in seen:
+                    seen[key] = q.device_ip or "?"
+                    lines.append(f"• <code>{_esc(q.domain)}</code> — {_esc(q.device_ip or '?')}")
+            return "\n".join(lines), BACK_MENU
+        finally:
+            db.close()
+
+    def _screen_device_detail(self, mac: str):
+        from database import SessionLocal
+        from models import Device, DNSQuery, Connection
+        from services.auto_config import get as net_cfg
+        db = SessionLocal()
+        try:
+            d = db.query(Device).filter(Device.mac == mac).first()
+            if not d:
+                return "❌ Устройство не найдено", BACK_MENU
+
+            gateway = net_cfg().get("gateway", "")
+            icon, label = _device_display(d, gateway)
+            badge = " 🆕" if d.is_new else ""
+
+            lines = [f"<b>{icon} {_esc(label)}</b>{badge}\n"]
+            lines.append(f"IP: <code>{_esc(d.ip)}</code>")
+            if d.hostname:
+                lines.append(f"Хост: <code>{_esc(d.hostname)}</code>")
+            if d.vendor:
+                lines.append(f"Тип: {_esc(d.vendor)}")
+            lines.append(f"MAC: <code>{_esc(d.mac)}</code>")
+            if d.first_seen:
+                lines.append(f"Первый раз: {d.first_seen.strftime('%d.%m %H:%M')}")
+            if d.last_seen:
+                lines.append(f"Последний раз: {d.last_seen.strftime('%d.%m %H:%M')}")
+
+            # DNS queries from this device
+            dns_count = db.query(DNSQuery).filter(DNSQuery.device_ip == d.ip).count()
+            conn_count = db.query(Connection).filter(Connection.src_ip == d.ip).count()
+            threat_count = db.query(Connection).filter(
+                Connection.src_ip == d.ip,
+                Connection.is_threat == True  # noqa: E712
+            ).count()
+
+            lines.append(f"\nDNS-запросов: {dns_count}")
+            lines.append(f"Соединений: {conn_count}")
+            if threat_count:
+                lines.append(f"🚨 Угроз: {threat_count}")
+            else:
+                lines.append("✅ Угроз не обнаружено")
+
+            kb = {"inline_keyboard": [
+                [{"text": f"✏️ Переименовать", "callback_data": f"name_dev:{d.mac}"}],
+                [{"text": "📡 Устройства", "callback_data": "devices"}],
+                [{"text": "⬅️ Меню", "callback_data": "menu"}],
+            ]}
+            return "\n".join(lines), kb
         finally:
             db.close()
 
@@ -524,6 +674,8 @@ class TelegramBot:
         "new_devices": "_screen_new_devices",
         "threats": "_screen_threats",
         "traffic": "_screen_traffic",
+        "connections": "_screen_connections",
+        "dns": "_screen_dns",
         "actions": None,
         "read_all": "_action_read_all",
         "refresh_intel": "_action_refresh_intel",
@@ -539,6 +691,8 @@ class TelegramBot:
         "/traffic": "traffic", "/new": "new_devices",
         "/scan": "scan_now", "/reset": "reset_confirm",
         "/сеть": "my_network", "/network": "my_network",
+        "/connections": "connections", "/соединения": "connections",
+        "/dns": "dns",
         "/отмена": "menu", "/cancel": "menu",
     }
 
@@ -554,6 +708,9 @@ class TelegramBot:
         if key.startswith("name_dev:"):
             mac = key.split(":", 1)[1]
             return self._action_name_device_start(mac)
+        if key.startswith("dev_detail:"):
+            mac = key.split(":", 1)[1]
+            return self._screen_device_detail(mac)
         method = self.SCREENS.get(key)
         if not method:
             return ("Неизвестная команда. /menu", MAIN_MENU)

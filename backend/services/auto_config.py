@@ -41,6 +41,54 @@ def _default_route_interface() -> Optional[str]:
     return None
 
 
+def _get_gateway() -> Optional[str]:
+    """Try multiple methods to find the default gateway (Android-safe)."""
+    # 1. Termux iproute2 or system ip
+    for cmd in (
+        ["ip", "route", "show", "default"],
+        ["/system/bin/ip", "route", "show", "default"],
+        ["ip", "route", "show", "table", "all"],
+        ["/system/bin/ip", "route", "show", "table", "all"],
+    ):
+        try:
+            out = subprocess.check_output(cmd, text=True, timeout=5,
+                                          stderr=subprocess.DEVNULL)
+            for line in out.splitlines():
+                parts = line.split()
+                if "default" in line and "via" in parts:
+                    return parts[parts.index("via") + 1]
+        except Exception:
+            pass
+
+    # 2. Parse /proc/net/route (hex little-endian table, often readable without root)
+    try:
+        with open("/proc/net/route") as f:
+            for line in f.readlines()[1:]:
+                parts = line.split()
+                if len(parts) < 3:
+                    continue
+                dest, gw_hex = parts[1], parts[2]
+                if dest == "00000000" and gw_hex != "00000000":
+                    n = int(gw_hex, 16)
+                    return f"{n & 0xFF}.{(n >> 8) & 0xFF}.{(n >> 16) & 0xFF}.{(n >> 24) & 0xFF}"
+    except Exception:
+        pass
+
+    # 3. Guess: same subnet, last octet = 1 (most common home router)
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        our_ip = s.getsockname()[0]
+        s.close()
+        parts = our_ip.split(".")
+        if len(parts) == 4:
+            return f"{parts[0]}.{parts[1]}.{parts[2]}.1"
+    except Exception:
+        pass
+
+    return None
+
+
 def detect() -> dict:
     """
     Return {interface, my_ip, gateway, subnet} auto-detected from the OS.
@@ -72,18 +120,8 @@ def detect() -> dict:
         except Exception:
             pass
 
-    # Get default gateway
-    try:
-        out = subprocess.check_output(
-            ["ip", "route", "show", "default"], text=True, timeout=5
-        )
-        for line in out.splitlines():
-            parts = line.split()
-            if "via" in parts:
-                gateway = parts[parts.index("via") + 1]
-                break
-    except Exception:
-        pass
+    # Get default gateway — try several methods (Android needs multiple fallbacks)
+    gateway = _get_gateway()
 
     result = {
         "interface": iface,
