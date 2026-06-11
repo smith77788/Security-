@@ -2,6 +2,16 @@ import os
 from pathlib import Path
 
 BASE_DIR = Path(__file__).parent
+
+# Автозагрузка .env файла (для запуска без Docker — Termux, прямой запуск)
+_env_file = BASE_DIR / ".env"
+if _env_file.exists():
+    with open(_env_file) as _f:
+        for _line in _f:
+            _line = _line.strip()
+            if _line and not _line.startswith("#") and "=" in _line:
+                _key, _, _val = _line.partition("=")
+                os.environ.setdefault(_key.strip(), _val.strip())
 DATA_DIR = BASE_DIR.parent / "data"
 DB_PATH = os.getenv("DB_PATH", str(BASE_DIR / "family_security.db"))
 
