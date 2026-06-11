@@ -30,7 +30,7 @@ logging.basicConfig(
 )
 log = logging.getLogger("main")
 
-scheduler = AsyncIOScheduler()
+scheduler = AsyncIOScheduler(timezone="UTC")
 
 
 @asynccontextmanager
