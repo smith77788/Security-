@@ -1,20 +1,25 @@
 """
-Device discovery via ARP table, ping-sweep, and optional nmap.
-Read-only / passive — no exploitation, no credential testing.
+Device discovery for Android/Termux without root.
 
-Methods tried in order (most to least compatible with Android/Termux):
-  1. ip neigh show     — kernel neighbor table, works on Android without root
-  2. /proc/net/arp     — direct kernel ARP table (may need root on some Android)
-  3. arp -n            — net-tools, often absent on Android
-  4. ping sweep        — populates ARP cache; retries methods 1-3 afterwards
-  5. nmap -sn          — optional, requires install
+Methods (in order):
+  1. SSDP/UPnP multicast   — routers, smart TVs, IoT devices
+  2. mDNS multicast         — phones, Macs, printers, Chromecasts
+  3. NetBIOS broadcast      — Windows / Samba hosts
+  4. TCP connect scan       — any host with an open port
+  5. ip neigh / /proc/net/arp — if available (Linux with root)
+
+All methods use ordinary sockets — no CAP_NET_RAW, no root required.
+Read-only / passive: no exploitation, no credential testing.
 """
 import concurrent.futures
 import ipaddress
 import logging
 import re
-import subprocess
+import select
 import socket
+import struct
+import subprocess
+import time
 from datetime import datetime
 from typing import Optional
 
@@ -29,184 +34,7 @@ log = logging.getLogger("scanner")
 
 _MAC_RE = re.compile(r"([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}")
 
-
-def _ip_neigh_show() -> list[dict]:
-    """Parse `ip neigh show` — works on Android/Termux without root.
-
-    Tries Termux `ip` (iproute2) first, then Android system `/system/bin/ip`.
-    Output format: IP dev IFACE lladdr MAC STATE
-    """
-    results: dict[str, dict] = {}
-    candidates = [
-        ["ip", "neigh", "show"],
-        ["/system/bin/ip", "neigh", "show"],
-    ]
-    for cmd in candidates:
-        try:
-            out = subprocess.check_output(
-                cmd, text=True, timeout=10,
-                stderr=subprocess.DEVNULL,
-            )
-            for line in out.splitlines():
-                parts = line.split()
-                if "lladdr" not in parts or len(parts) < 5:
-                    continue
-                ip = parts[0]
-                mac = parts[parts.index("lladdr") + 1]
-                if _MAC_RE.match(mac):
-                    results[mac.upper()] = {"ip": ip, "mac": mac.upper()}
-            if results:
-                break  # found entries — no need to try next candidate
-        except FileNotFoundError:
-            continue
-        except Exception as e:
-            log.debug("ip neigh show (%s) failed: %s", cmd[0], e)
-    if not results:
-        log.debug("ip neigh show: no entries found")
-    return list(results.values())
-
-
-def _read_proc_arp() -> list[dict]:
-    """Read /proc/net/arp — may be restricted on Android without root."""
-    results = []
-    try:
-        with open("/proc/net/arp") as f:
-            for line in f.readlines()[1:]:  # skip header
-                parts = line.split()
-                if len(parts) < 4:
-                    continue
-                ip, _, _, mac, *_ = parts
-                if mac == "00:00:00:00:00:00":
-                    continue
-                results.append({"ip": ip, "mac": mac.upper()})
-    except PermissionError:
-        log.debug("/proc/net/arp: permission denied (normal on Android)")
-    except Exception as e:
-        log.debug("Cannot read /proc/net/arp: %s", e)
-    return results
-
-
-def _arp_command() -> list[dict]:
-    """Fallback: parse `arp -n` output."""
-    results = []
-    try:
-        out = subprocess.check_output(
-            ["arp", "-n"], text=True, timeout=10,
-            stderr=subprocess.DEVNULL,
-        )
-        for line in out.splitlines()[1:]:
-            parts = line.split()
-            if len(parts) < 3:
-                continue
-            ip = parts[0]
-            mac = parts[2]
-            if _MAC_RE.match(mac):
-                results.append({"ip": ip, "mac": mac.upper()})
-    except FileNotFoundError:
-        log.debug("arp command not available")
-    except Exception as e:
-        log.debug("arp command failed: %s", e)
-    return results
-
-
-def _udp_probe_sweep(subnet: str) -> int:
-    """Send UDP probes to force kernel ARP resolution without root.
-
-    Sends a 1-byte UDP packet to each host on port 65535.
-    The kernel must resolve ARP to deliver (or reject) the packet,
-    which populates the neighbour table — even if the target drops it.
-    This requires only SOCK_DGRAM, no CAP_NET_RAW, works on Android.
-    """
-    import socket as _socket
-
-    def _probe(ip: str) -> None:
-        try:
-            s = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
-            s.settimeout(0.05)
-            s.sendto(b"\x00", (ip, 65535))
-            s.close()
-        except Exception:
-            pass
-
-    try:
-        net = ipaddress.IPv4Network(subnet, strict=False)
-        hosts = [str(h) for h in net.hosts()]
-        if len(hosts) > 254:
-            hosts = hosts[:254]
-        log.info("UDP probe sweep: %d hosts in %s …", len(hosts), subnet)
-        with concurrent.futures.ThreadPoolExecutor(max_workers=50) as pool:
-            list(pool.map(_probe, hosts))
-        log.info("UDP probe sweep complete")
-        return len(hosts)
-    except Exception as e:
-        log.warning("UDP probe sweep error: %s", e)
-        return 0
-
-
-def _ping_sweep(subnet: str) -> int:
-    """Ping sweep fallback (requires ping binary with proper permissions)."""
-
-    def _ping_one(ip: str) -> bool:
-        try:
-            r = subprocess.run(
-                ["ping", "-c", "1", "-W", "1", ip],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                timeout=3,
-            )
-            return r.returncode == 0
-        except Exception:
-            return False
-
-    try:
-        net = ipaddress.IPv4Network(subnet, strict=False)
-        hosts = [str(h) for h in net.hosts()]
-        if len(hosts) > 254:
-            hosts = hosts[:254]
-        log.info("Ping sweep: %d hosts in %s …", len(hosts), subnet)
-        with concurrent.futures.ThreadPoolExecutor(max_workers=40) as pool:
-            results = list(pool.map(_ping_one, hosts))
-        found = sum(results)
-        log.info("Ping sweep: %d hosts responded", found)
-        return found
-    except Exception as e:
-        log.warning("Ping sweep error: %s", e)
-        return 0
-
-
-def _nmap_scan(subnet: str) -> list[dict]:
-    """Safe nmap host-discovery only (-sn = no port scan)."""
-    results = []
-    try:
-        out = subprocess.check_output(
-            ["nmap", "-sn", "--host-timeout", "5s", subnet],
-            text=True, timeout=60, stderr=subprocess.DEVNULL,
-        )
-        current_ip = None
-        for line in out.splitlines():
-            m_ip = re.search(r"Nmap scan report for (?:\S+ \()?(\d+\.\d+\.\d+\.\d+)\)?", line)
-            if m_ip:
-                current_ip = m_ip.group(1)
-            m_mac = re.search(r"MAC Address: ([0-9A-F:]{17})", line, re.I)
-            if m_mac and current_ip:
-                results.append({"ip": current_ip, "mac": m_mac.group(1).upper()})
-    except FileNotFoundError:
-        log.debug("nmap not installed — skipping")
-    except Exception as e:
-        log.debug("nmap scan failed: %s", e)
-    return results
-
-
-def _collect_arp() -> list[dict]:
-    """Try all ARP-table readers and return combined unique results."""
-    found: dict[str, dict] = {}
-    for entry in _ip_neigh_show():
-        found[entry["mac"]] = entry
-    for entry in _read_proc_arp():
-        found.setdefault(entry["mac"], entry)
-    for entry in _arp_command():
-        found.setdefault(entry["mac"], entry)
-    return list(found.values())
-
+# ── helpers ──────────────────────────────────────────────────────────────────
 
 def _resolve_hostname(ip: str) -> Optional[str]:
     try:
@@ -215,51 +43,293 @@ def _resolve_hostname(ip: str) -> Optional[str]:
         return None
 
 
-def discover_devices(subnet: str = LOCAL_SUBNET) -> list[dict]:
-    """Collect devices from all available sources and deduplicate by MAC."""
+def _fake_mac(ip: str) -> str:
+    """Deterministic pseudo-MAC from IP (used when real MAC is unavailable)."""
+    parts = ip.split(".")
+    if len(parts) == 4:
+        return f"02:00:{int(parts[0]):02X}:{int(parts[1]):02X}:{int(parts[2]):02X}:{int(parts[3]):02X}"
+    return "02:00:00:00:00:01"
+
+
+# ── Method 1: SSDP / UPnP ────────────────────────────────────────────────────
+
+_SSDP_ADDR = "239.255.255.250"
+_SSDP_PORT = 1900
+_SSDP_REQUEST = (
+    "M-SEARCH * HTTP/1.1\r\n"
+    "HOST: 239.255.255.250:1900\r\n"
+    "MAN: \"ssdp:discover\"\r\n"
+    "MX: 3\r\n"
+    "ST: ssdp:all\r\n"
+    "\r\n"
+).encode()
+
+
+def _ssdp_scan(timeout: float = 4.0) -> list[dict]:
+    """Send SSDP M-SEARCH multicast and collect responding device IPs."""
     found: dict[str, dict] = {}
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
+        sock.settimeout(timeout)
+        sock.sendto(_SSDP_REQUEST, (_SSDP_ADDR, _SSDP_PORT))
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                data, addr = sock.recvfrom(4096)
+                ip = addr[0]
+                if ip not in found:
+                    found[ip] = {"ip": ip, "mac": _fake_mac(ip), "method": "ssdp"}
+                    # Try to extract device name from SSDP response
+                    text = data.decode(errors="ignore")
+                    m = re.search(r"(?:SERVER|friendlyName):\s*(.+)", text, re.I)
+                    if m:
+                        found[ip]["hostname"] = m.group(1).strip()[:64]
+            except socket.timeout:
+                break
+            except Exception:
+                pass
+        sock.close()
+    except Exception as e:
+        log.debug("SSDP scan failed: %s", e)
+    log.info("SSDP: found %d devices", len(found))
+    return list(found.values())
 
-    # Pass 1: read existing ARP/neighbor cache
-    for entry in _collect_arp():
-        found[entry["mac"]] = entry
 
-    # Pass 2: if nothing found, do UDP probe sweep (works on Android without root)
-    if not found:
-        log.info("ARP cache empty — running UDP probe sweep …")
-        _udp_probe_sweep(subnet)
-        import time
-        time.sleep(1)  # let the kernel process ARP responses
-        for entry in _collect_arp():
-            found[entry["mac"]] = entry
+# ── Method 2: mDNS ───────────────────────────────────────────────────────────
 
-    # Pass 3: if still nothing, also try ping (works if ping has proper caps)
-    if not found:
-        log.info("UDP sweep found nothing — trying ping sweep …")
-        _ping_sweep(subnet)
-        import time
-        time.sleep(1)
-        for entry in _collect_arp():
-            found[entry["mac"]] = entry
+_MDNS_ADDR = "224.0.0.251"
+_MDNS_PORT = 5353
 
-    # Pass 3: nmap as last resort (optional, requires install)
-    for entry in _nmap_scan(subnet):
-        found.setdefault(entry["mac"], entry)
+
+def _mdns_query() -> bytes:
+    """Build a minimal mDNS PTR query for _services._dns-sd._udp.local."""
+    name = b"\x09_services\x07_dns-sd\x04_udp\x05local\x00"
+    return (
+        b"\x00\x00"  # transaction id
+        b"\x00\x00"  # flags: standard query
+        b"\x00\x01"  # 1 question
+        b"\x00\x00\x00\x00\x00\x00"  # no answers/authority/additional
+        + name
+        + b"\x00\x0c"  # type PTR
+        + b"\x00\x01"  # class IN
+    )
+
+
+def _mdns_scan(timeout: float = 3.0) -> list[dict]:
+    """Send mDNS query and collect responding device IPs."""
+    found: dict[str, dict] = {}
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        ttl = struct.pack("b", 1)
+        sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, ttl)
+        sock.settimeout(timeout)
+        sock.sendto(_mdns_query(), (_MDNS_ADDR, _MDNS_PORT))
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                data, addr = sock.recvfrom(4096)
+                ip = addr[0]
+                if ip not in found:
+                    found[ip] = {"ip": ip, "mac": _fake_mac(ip), "method": "mdns"}
+            except socket.timeout:
+                break
+            except Exception:
+                pass
+        sock.close()
+    except Exception as e:
+        log.debug("mDNS scan failed: %s", e)
+    log.info("mDNS: found %d devices", len(found))
+    return list(found.values())
+
+
+# ── Method 3: NetBIOS ────────────────────────────────────────────────────────
+
+def _netbios_query() -> bytes:
+    """NetBIOS Name Service broadcast query for *(any) name."""
+    return (
+        b"\xaa\xbb"       # transaction id
+        b"\x01\x10"       # flags: broadcast query
+        b"\x00\x01"       # 1 question
+        b"\x00\x00\x00\x00\x00\x00"
+        b"\x20"           # encoded name length
+        + b"CKAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"  # wildcard *
+        + b"\x00"
+        + b"\x00\x21"     # type NB
+        + b"\x00\x01"     # class IN
+    )
+
+
+def _netbios_scan(broadcast: str = "192.168.1.255", timeout: float = 2.0) -> list[dict]:
+    found: dict[str, dict] = {}
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        sock.settimeout(timeout)
+        sock.sendto(_netbios_query(), (broadcast, 137))
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                data, addr = sock.recvfrom(1024)
+                ip = addr[0]
+                if ip not in found:
+                    found[ip] = {"ip": ip, "mac": _fake_mac(ip), "method": "netbios"}
+            except socket.timeout:
+                break
+            except Exception:
+                pass
+        sock.close()
+    except Exception as e:
+        log.debug("NetBIOS scan failed: %s", e)
+    log.info("NetBIOS: found %d devices", len(found))
+    return list(found.values())
+
+
+# ── Method 4: TCP port scan ───────────────────────────────────────────────────
+
+# Ports that many home devices have open
+_TCP_PORTS = [80, 443, 22, 23, 8080, 8443, 8888, 554, 7547, 53, 21, 8181, 1883]
+
+
+def _tcp_probe(ip: str) -> Optional[dict]:
+    for port in _TCP_PORTS:
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(0.4)
+            result = s.connect_ex((ip, port))
+            s.close()
+            if result in (0, 111):  # 0=connected, 111=ECONNREFUSED (host exists)
+                return {"ip": ip, "mac": _fake_mac(ip), "method": "tcp", "open_port": port}
+        except Exception:
+            pass
+    return None
+
+
+def _tcp_scan(subnet: str) -> list[dict]:
+    """TCP connect scan — finds any host that has at least one open/refusing port."""
+    try:
+        net = ipaddress.IPv4Network(subnet, strict=False)
+        hosts = [str(h) for h in net.hosts()]
+        if len(hosts) > 254:
+            hosts = hosts[:254]
+        log.info("TCP scan: probing %d hosts in %s …", len(hosts), subnet)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=50) as pool:
+            results = [r for r in pool.map(_tcp_probe, hosts) if r is not None]
+        log.info("TCP scan: found %d hosts", len(results))
+        return results
+    except Exception as e:
+        log.warning("TCP scan error: %s", e)
+        return []
+
+
+# ── Method 5: ARP table (Linux / rooted Android) ─────────────────────────────
+
+def _ip_neigh_show() -> list[dict]:
+    results: dict[str, dict] = {}
+    for cmd in (["ip", "neigh", "show"], ["/system/bin/ip", "neigh", "show"]):
+        try:
+            out = subprocess.check_output(cmd, text=True, timeout=10,
+                                          stderr=subprocess.DEVNULL)
+            for line in out.splitlines():
+                parts = line.split()
+                if "lladdr" not in parts or len(parts) < 5:
+                    continue
+                ip = parts[0]
+                mac = parts[parts.index("lladdr") + 1]
+                if _MAC_RE.match(mac):
+                    results[mac.upper()] = {"ip": ip, "mac": mac.upper(), "method": "arp"}
+            if results:
+                break
+        except FileNotFoundError:
+            continue
+        except Exception as e:
+            log.debug("ip neigh show (%s): %s", cmd[0], e)
+    return list(results.values())
+
+
+def _read_proc_arp() -> list[dict]:
+    results = []
+    try:
+        with open("/proc/net/arp") as f:
+            for line in f.readlines()[1:]:
+                parts = line.split()
+                if len(parts) < 4:
+                    continue
+                ip, _, _, mac, *_ = parts
+                if mac == "00:00:00:00:00:00":
+                    continue
+                results.append({"ip": ip, "mac": mac.upper(), "method": "arp"})
+    except PermissionError:
+        log.debug("/proc/net/arp: permission denied (normal on Android)")
+    except Exception as e:
+        log.debug("/proc/net/arp: %s", e)
+    return results
+
+
+# ── broadcast address helper ──────────────────────────────────────────────────
+
+def _broadcast(subnet: str) -> str:
+    try:
+        net = ipaddress.IPv4Network(subnet, strict=False)
+        return str(net.broadcast_address)
+    except Exception:
+        return "192.168.1.255"
+
+
+# ── main discovery entry point ────────────────────────────────────────────────
+
+def discover_devices(subnet: str = LOCAL_SUBNET) -> list[dict]:
+    """Collect devices from all available sources and deduplicate by IP."""
+    found: dict[str, dict] = {}  # keyed by IP
+
+    def _add(entries: list[dict]):
+        for e in entries:
+            ip = e.get("ip", "")
+            if ip and ip not in found:
+                found[ip] = e
+            elif ip in found and e.get("mac", "").count(":") == 5 and not e["mac"].startswith("02:00"):
+                # prefer real MACs over fake ones
+                found[ip] = e
+
+    # Fast multicast methods first (parallel)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+        f_ssdp = pool.submit(_ssdp_scan)
+        f_mdns = pool.submit(_mdns_scan)
+        f_nb   = pool.submit(_netbios_scan, _broadcast(subnet))
+        f_arp  = pool.submit(_ip_neigh_show)
+        f_proc = pool.submit(_read_proc_arp)
+
+        _add(f_arp.result())
+        _add(f_proc.result())
+        _add(f_ssdp.result())
+        _add(f_mdns.result())
+        _add(f_nb.result())
+
+    # TCP scan fills in hosts missed by multicast
+    _add(_tcp_scan(subnet))
 
     # Enrich with hostname and vendor
     devices = []
-    for mac, entry in found.items():
-        hostname = _resolve_hostname(entry["ip"])
-        vendor = lookup_vendor(mac, OUI_FILE)
+    for ip, entry in found.items():
+        mac = entry.get("mac", _fake_mac(ip))
+        hostname = entry.get("hostname") or _resolve_hostname(ip)
+        vendor = lookup_vendor(mac, OUI_FILE) if not mac.startswith("02:00") else entry.get("method", "")
         devices.append({
             "mac": mac,
-            "ip": entry["ip"],
+            "ip": ip,
             "hostname": hostname,
             "vendor": vendor,
         })
+
+    log.info("Scan complete — %d devices found via all methods", len(devices))
     return devices
 
 
-def upsert_device(db: Session, info: dict) -> tuple[Device, bool]:
+# ── database upsert ───────────────────────────────────────────────────────────
+
+def upsert_device(db: Session, info: dict) -> tuple:
     """Insert or update device. Returns (device, is_new)."""
     now = datetime.utcnow()
     device = db.query(Device).filter(Device.mac == info["mac"]).first()
@@ -305,14 +375,14 @@ def run_scan():
                     device_ip=info.get("ip"),
                     alert_type="new_device",
                     severity="warning",
-                    message=f"New device joined the network: {info.get('vendor', 'Unknown')} ({info['mac']})",
-                    detail=f"IP: {info.get('ip')}, Hostname: {info.get('hostname')}",
+                    message=f"New device: {info.get('vendor', 'Unknown')} ({info['mac']})",
+                    detail=f"IP: {info.get('ip')}, Host: {info.get('hostname')}",
                 )
                 db.add(alert)
                 db.flush()
                 from services.notifier import notify_alert
                 notify_alert(alert)
         db.commit()
-        log.info("Scan complete — %d devices found, %d new", len(devices), new_count)
+        log.info("Scan saved — %d devices, %d new", len(devices), new_count)
     finally:
         db.close()
