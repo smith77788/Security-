@@ -84,6 +84,8 @@ def ingest_scan(
             db.flush()
             manager.emit_new_device(device, loc.name)
             manager.emit_alert(alert, loc.name)
+            from services.notifier import notify_alert
+            notify_alert(alert)
         else:
             device.ip = item.ip or device.ip
             device.hostname = item.hostname or device.hostname
@@ -120,6 +122,8 @@ def ingest_scan(
             db.add(alert)
             db.flush()
             manager.emit_alert(alert, loc.name)
+            from services.notifier import notify_alert
+            notify_alert(alert)
 
     db.add_all(dns_rows)
     db.commit()

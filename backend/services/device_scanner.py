@@ -166,6 +166,9 @@ def run_scan():
                     detail=f"IP: {info.get('ip')}, Hostname: {info.get('hostname')}",
                 )
                 db.add(alert)
+                db.flush()
+                from services.notifier import notify_alert
+                notify_alert(alert)
         db.commit()
         log.info("Scan complete — %d devices found, %d new", len(devices), new_count)
     finally:

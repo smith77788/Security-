@@ -17,6 +17,10 @@ services:
       - SCAN_INTERVAL_SECONDS=${SCAN_INTERVAL_SECONDS:-60}
       - DNS_CAPTURE_ENABLED=${DNS_CAPTURE_ENABLED:-false}
       - LOG_RETENTION_DAYS=${LOG_RETENTION_DAYS:-30}
+      - JWT_SECRET=${JWT_SECRET:-change-me-use-long-random-secret}
+      - JWT_EXPIRE_HOURS=${JWT_EXPIRE_HOURS:-168}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}
       - DB_PATH=/data/family_security.db
       - CORS_ORIGINS=http://localhost:3000,http://localhost:5173
     volumes:

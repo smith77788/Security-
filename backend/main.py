@@ -18,7 +18,7 @@ from services import auto_config
 from routers import (
     devices, dns, alerts, dashboard, assistant,
     settings as settings_router, locations, ingest,
-    ws as ws_router, network_map, intel,
+    ws as ws_router, network_map, intel, auth as auth_router,
 )
 
 logging.basicConfig(
@@ -35,6 +35,10 @@ async def lifespan(app: FastAPI):
     init_db()
     log.info("Database initialised")
     manager.set_loop(asyncio.get_event_loop())
+
+    # Interactive Telegram bot (no-op until token + chat_id are configured)
+    from services.telegram_bot import bot as tg_bot
+    tg_bot.start()
 
     if DEMO_MODE:
         from services.demo_seed import seed
@@ -139,7 +143,7 @@ def _load_threat_intel():
 app = FastAPI(
     title="Family Security",
     description="Home Network Guardian — full-spectrum passive monitoring",
-    version="3.0.0",
+    version="3.1.0",
     lifespan=lifespan,
 )
 
@@ -151,21 +155,35 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-PROTECTED = ["/api/settings", "/api/locations"]
+# Paths that never require a JWT:
+#  - /api/auth/login  — the login endpoint itself
+#  - /api/ingest/*    — agents authenticate with their own X-API-Key
+#  - /api/health      — used by Docker healthchecks / agents
+PUBLIC_PATHS = ("/api/auth/login", "/api/ingest", "/api/health")
 
 
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
-    if request.url.path.startswith("/api/ingest"):
+    path = request.url.path
+    if not path.startswith("/api") or path.startswith(PUBLIC_PATHS):
         return await call_next(request)
-    if not DEMO_MODE and any(request.url.path.startswith(p) for p in PROTECTED):
-        token = request.headers.get("X-Admin-Token", "")
-        if token != ADMIN_PASSWORD:
-            return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
+    if DEMO_MODE:
+        return await call_next(request)
+
+    auth = request.headers.get("Authorization", "")
+    token = auth.removeprefix("Bearer ").strip() if auth.startswith("Bearer ") else ""
+    # Legacy header kept for backwards compatibility with old agents/scripts
+    if not token and request.headers.get("X-Admin-Token", "") == ADMIN_PASSWORD:
+        return await call_next(request)
+    try:
+        from services.auth_utils import decode_token
+        decode_token(token)
+    except Exception:
+        return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
     return await call_next(request)
 
 
-for r in [devices, dns, alerts, dashboard, assistant,
+for r in [auth_router, devices, dns, alerts, dashboard, assistant,
           settings_router, locations, ingest, network_map, intel]:
     app.include_router(r.router)
 app.include_router(ws_router.router)
@@ -177,7 +195,7 @@ def health():
     from services.threat_intel import status as ti_status
     return {
         "status": "ok",
-        "version": "3.0.0",
+        "version": "3.1.0",
         "demo_mode": DEMO_MODE,
         "dns_capture": DNS_CAPTURE_ENABLED,
         "network": net,

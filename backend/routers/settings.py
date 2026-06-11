@@ -1,3 +1,4 @@
+import os
 from typing import List
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
@@ -16,6 +17,12 @@ DEFAULTS = {
     "dns_capture_enabled": "false",
     "network_interface": "eth0",
     "local_subnet": "192.168.1.0/24",
+    # Telegram notifications — env vars seed the first run, then the DB wins
+    "telegram_bot_token": os.getenv("TELEGRAM_BOT_TOKEN", ""),
+    "telegram_chat_id": os.getenv("TELEGRAM_CHAT_ID", ""),
+    "notify_on_critical": "true",
+    "notify_on_warning": "false",
+    "notify_on_new_device": "true",
 }
 
 
@@ -53,6 +60,20 @@ def clear_logs(db: Session = Depends(get_db)):
     db.query(Alert).delete()
     db.commit()
     return {"ok": True, "message": "All logs and alerts cleared"}
+
+
+@router.post("/test-telegram")
+def test_telegram(db: Session = Depends(get_db)):
+    """Send a test message using the saved Telegram settings."""
+    from services.notifier import send_test
+    token = _get_or_default(db, "telegram_bot_token").value.strip()
+    chat_id = _get_or_default(db, "telegram_chat_id").value.strip()
+    if not token or not chat_id:
+        raise HTTPException(status_code=400, detail="Заполните telegram_bot_token и telegram_chat_id")
+    ok = send_test(token, chat_id)
+    if not ok:
+        raise HTTPException(status_code=502, detail="Telegram API вернул ошибку — проверьте токен и chat_id")
+    return {"ok": True, "message": "Тестовое сообщение отправлено"}
 
 
 @router.post("/apply-retention")

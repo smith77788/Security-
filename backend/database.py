@@ -43,6 +43,9 @@ def _migrate(eng):
 
 
 def init_db():
-    from models import Location, Device, DNSQuery, Alert, AppSetting  # noqa: F401
+    from models import (  # noqa: F401
+        Location, Device, DNSQuery, Alert, AppSetting,
+        Connection, BandwidthSample, DeviceFingerprint, GeoCache, BlockedDevice,
+    )
     Base.metadata.create_all(bind=engine)
     _migrate(engine)

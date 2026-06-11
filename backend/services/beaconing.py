@@ -128,4 +128,6 @@ def run_and_alert(db: Session, location_id: Optional[int] = None):
         db.add(alert)
         db.flush()
         manager.emit_alert(alert, "")
+        from services.notifier import notify_alert
+        notify_alert(alert)
     db.commit()

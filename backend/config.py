@@ -13,6 +13,10 @@ SCAN_INTERVAL_SECONDS = int(os.getenv("SCAN_INTERVAL_SECONDS", "60"))
 DNS_CAPTURE_ENABLED = os.getenv("DNS_CAPTURE_ENABLED", "false").lower() == "true"
 LOG_RETENTION_DAYS = int(os.getenv("LOG_RETENTION_DAYS", "30"))
 
+# JWT authentication
+JWT_SECRET = os.getenv("JWT_SECRET", "change-me-use-long-random-secret-in-production")
+JWT_EXPIRE_HOURS = int(os.getenv("JWT_EXPIRE_HOURS", "168"))  # 7 days default
+
 SUSPICIOUS_DOMAINS_FILE = str(DATA_DIR / "suspicious_domains.txt")
 OUI_FILE = str(DATA_DIR / "oui.txt")
 

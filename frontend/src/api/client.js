@@ -1,10 +1,27 @@
 const BASE = "/api";
+const TOKEN_KEY = "fs_token";
+
+export const auth = {
+  getToken: () => localStorage.getItem(TOKEN_KEY),
+  setToken: (t) => localStorage.setItem(TOKEN_KEY, t),
+  clearToken: () => localStorage.removeItem(TOKEN_KEY),
+  isLoggedIn: () => !!localStorage.getItem(TOKEN_KEY),
+};
 
 async function request(path, options = {}) {
+  const token = auth.getToken();
   const res = await fetch(`${BASE}${path}`, {
-    headers: { "Content-Type": "application/json", ...options.headers },
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...options.headers,
+    },
     ...options,
   });
+  if (res.status === 401 && !path.startsWith("/auth/")) {
+    auth.clearToken();
+    window.dispatchEvent(new Event("fs:unauthorized"));
+  }
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.detail || `HTTP ${res.status}`);
@@ -14,6 +31,9 @@ async function request(path, options = {}) {
 
 export const api = {
   health: () => request("/health"),
+
+  // Auth
+  login: (password) => request("/auth/login", { method: "POST", body: JSON.stringify({ password }) }),
 
   // Locations
   locations: () => request("/locations"),
@@ -33,6 +53,9 @@ export const api = {
   },
   updateDevice: (id, body) => request(`/devices/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   acknowledgeDevice: (id) => request(`/devices/${id}/acknowledge`, { method: "POST" }),
+  blockDevice: (id, reason) => request(`/devices/${id}/block`, { method: "POST", body: JSON.stringify({ reason }) }),
+  unblockDevice: (id) => request(`/devices/${id}/unblock`, { method: "POST" }),
+  blockedDevices: () => request("/devices/blocked/list"),
 
   // DNS
   topDomains: (period = "24h", locationId) =>
@@ -62,6 +85,7 @@ export const api = {
   updateSetting: (key, value) => request(`/settings/${key}`, { method: "PUT", body: JSON.stringify({ value }) }),
   clearLogs: () => request("/settings/logs", { method: "DELETE" }),
   applyRetention: () => request("/settings/apply-retention", { method: "POST" }),
+  testTelegram: () => request("/settings/test-telegram", { method: "POST" }),
 
   // Network map & topology
   networkTopology: (queryString = "") => request(`/network/topology${queryString}`),

@@ -143,6 +143,19 @@ class GeoCache(Base):
     expires_at = Column(DateTime, index=True)
 
 
+class BlockedDevice(Base):
+    """Devices explicitly blocked/flagged by the admin."""
+    __tablename__ = "blocked_devices"
+
+    id = Column(Integer, primary_key=True)
+    mac = Column(String(17), unique=True, index=True, nullable=False)
+    ip = Column(String(15))
+    reason = Column(String(255))
+    blocked_at = Column(DateTime, default=datetime.utcnow)
+    blocked_by = Column(String(64), default="admin")
+    location_id = Column(Integer, ForeignKey("locations.id"))
+
+
 class AppSetting(Base):
     __tablename__ = "app_settings"
 

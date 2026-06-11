@@ -1,7 +1,10 @@
-import React from "react";
-import { BrowserRouter, Routes, Route, NavLink } from "react-router-dom";
+import React, { useState, useEffect, useCallback } from "react";
+import { BrowserRouter, Routes, Route, NavLink, useLocation } from "react-router-dom";
 import { AppProvider, useApp } from "./context/AppContext";
 import { useWebSocket } from "./hooks/useWebSocket";
+import { useIsMobile } from "./hooks/useIsMobile";
+import { api, auth } from "./api/client";
+import Login from "./components/Login";
 import Overview from "./components/Overview";
 import Devices from "./components/Devices";
 import DNSActivity from "./components/DNSActivity";
@@ -30,14 +33,27 @@ const NAV = [
   { path: "/settings",     label: "Настройки",  icon: "⚙️" },
 ];
 
+// Bottom tab bar on mobile shows the 4 most used pages + "Ещё" (opens drawer)
+const MOBILE_TABS = ["/", "/devices", "/alerts", "/map"];
+
 const ONLINE_DOT = { width: 7, height: 7, borderRadius: "50%", display: "inline-block", marginRight: 4 };
 
 const s = {
   layout: { display: "flex", minHeight: "100vh" },
-  sidebar: {
+  sidebar: (mobile, open) => ({
     width: 232, background: "#0d111c", flexShrink: 0,
     display: "flex", flexDirection: "column",
     borderRight: "1px solid #1a2035",
+    ...(mobile ? {
+      position: "fixed", top: 0, bottom: 0, left: 0, zIndex: 1000,
+      transform: open ? "translateX(0)" : "translateX(-100%)",
+      transition: "transform .22s ease",
+      boxShadow: open ? "0 0 40px rgba(0,0,0,.6)" : "none",
+      overflowY: "auto",
+    } : {}),
+  }),
+  overlay: {
+    position: "fixed", inset: 0, background: "rgba(0,0,0,.5)", zIndex: 999,
   },
   logo: { padding: "20px 18px 18px", borderBottom: "1px solid #1a2035" },
   logoTitle: { fontSize: 17, fontWeight: 800, color: "#60a5fa", letterSpacing: 1 },
@@ -55,14 +71,50 @@ const s = {
     padding: "9px 18px", color: "#64748b", textDecoration: "none",
     fontSize: 13.5, transition: "all .12s",
   },
-  main: { flex: 1, padding: "26px 30px", overflow: "auto", background: "#0f1117" },
+  main: (mobile) => ({
+    flex: 1, overflow: "auto", background: "#0f1117",
+    padding: mobile ? "16px 14px 80px" : "26px 30px",
+    minWidth: 0,
+  }),
   badge: {
     background: "#ef4444", color: "#fff", borderRadius: 10,
     padding: "0 5px", fontSize: 10, fontWeight: 700, minWidth: 16, textAlign: "center",
   },
+  // Mobile top bar
+  topbar: {
+    position: "sticky", top: 0, zIndex: 100,
+    display: "flex", alignItems: "center", gap: 12,
+    padding: "12px 14px", background: "#0d111c",
+    borderBottom: "1px solid #1a2035",
+  },
+  burger: {
+    background: "none", border: "none", color: "#94a3b8",
+    fontSize: 22, cursor: "pointer", padding: "2px 6px", lineHeight: 1,
+  },
+  topTitle: { fontSize: 15, fontWeight: 800, color: "#60a5fa", letterSpacing: 0.5 },
+  // Mobile bottom tab bar
+  tabbar: {
+    position: "fixed", bottom: 0, left: 0, right: 0, zIndex: 100,
+    display: "flex", background: "#0d111c",
+    borderTop: "1px solid #1a2035",
+    paddingBottom: "env(safe-area-inset-bottom, 0)",
+  },
+  tab: (active) => ({
+    flex: 1, display: "flex", flexDirection: "column", alignItems: "center",
+    gap: 2, padding: "8px 0 6px", textDecoration: "none",
+    color: active ? "#60a5fa" : "#475569", fontSize: 10,
+    position: "relative",
+    background: "none", border: "none", cursor: "pointer",
+  }),
+  tabIcon: { fontSize: 19, lineHeight: 1 },
+  tabBadge: {
+    position: "absolute", top: 4, right: "calc(50% - 18px)",
+    background: "#ef4444", color: "#fff", borderRadius: 8,
+    padding: "0 4px", fontSize: 9, fontWeight: 700, minWidth: 13, textAlign: "center",
+  },
   toastContainer: {
-    position: "fixed", bottom: 20, right: 20, zIndex: 9999,
-    display: "flex", flexDirection: "column", gap: 8, maxWidth: 340,
+    position: "fixed", bottom: 80, right: 14, left: 14, zIndex: 9999,
+    display: "flex", flexDirection: "column", gap: 8, maxWidth: 340, marginLeft: "auto",
   },
   toast: (sev) => ({
     padding: "12px 16px", borderRadius: 10, fontSize: 13,
@@ -118,54 +170,119 @@ function SidebarLocationPicker() {
   );
 }
 
-function AppInner() {
-  const { handleWSEvent, unreadCount } = useApp();
+function Sidebar({ mobile, open, onClose, onLogout, showLogout }) {
+  const { unreadCount } = useApp();
+  return (
+    <>
+      {mobile && open && <div style={s.overlay} onClick={onClose} />}
+      <aside style={s.sidebar(mobile, open)}>
+        <div style={s.logo}>
+          <div style={s.logoTitle}>FAMILY SECURITY</div>
+          <div style={s.logoSub}>Home Network Guardian</div>
+        </div>
+        <SidebarLocationPicker />
+        <nav style={s.nav}>
+          {NAV.map(({ path, label, icon }) => (
+            <NavLink
+              key={path}
+              to={path}
+              end={path === "/"}
+              onClick={mobile ? onClose : undefined}
+              style={({ isActive }) => ({
+                ...s.link,
+                ...(isActive ? { color: "#60a5fa", background: "#131c30", borderLeft: "3px solid #60a5fa" } : {}),
+              })}
+            >
+              <span>{icon}</span>
+              <span style={{ flex: 1 }}>{label}</span>
+              {label === "События" && unreadCount > 0 && <span style={s.badge}>{unreadCount}</span>}
+            </NavLink>
+          ))}
+        </nav>
+        {showLogout && (
+          <button
+            onClick={onLogout}
+            style={{
+              margin: 14, padding: "9px 0", borderRadius: 8,
+              border: "1px solid #1e2a45", background: "transparent",
+              color: "#64748b", fontSize: 13, cursor: "pointer",
+            }}
+          >
+            ⏻ Выйти
+          </button>
+        )}
+      </aside>
+    </>
+  );
+}
+
+function MobileTabBar({ onMore }) {
+  const { unreadCount } = useApp();
+  const loc = useLocation();
+  return (
+    <div style={s.tabbar}>
+      {MOBILE_TABS.map((path) => {
+        const item = NAV.find((n) => n.path === path);
+        const active = path === "/" ? loc.pathname === "/" : loc.pathname.startsWith(path);
+        return (
+          <NavLink key={path} to={path} style={s.tab(active)}>
+            <span style={s.tabIcon}>{item.icon}</span>
+            <span>{item.label}</span>
+            {path === "/alerts" && unreadCount > 0 && <span style={s.tabBadge}>{unreadCount}</span>}
+          </NavLink>
+        );
+      })}
+      <button style={s.tab(false)} onClick={onMore}>
+        <span style={s.tabIcon}>☰</span>
+        <span>Ещё</span>
+      </button>
+    </div>
+  );
+}
+
+function AppShell({ onLogout, showLogout }) {
+  const { handleWSEvent } = useApp();
   useWebSocket(handleWSEvent);
+  const isMobile = useIsMobile();
+  const [drawerOpen, setDrawerOpen] = useState(false);
 
   return (
     <BrowserRouter>
       <div style={s.layout}>
-        <aside style={s.sidebar}>
-          <div style={s.logo}>
-            <div style={s.logoTitle}>FAMILY SECURITY</div>
-            <div style={s.logoSub}>Home Network Guardian</div>
-          </div>
-          <SidebarLocationPicker />
-          <nav style={s.nav}>
-            {NAV.map(({ path, label, icon }) => (
-              <NavLink
-                key={path}
-                to={path}
-                end={path === "/"}
-                style={({ isActive }) => ({
-                  ...s.link,
-                  ...(isActive ? { color: "#60a5fa", background: "#131c30", borderLeft: "3px solid #60a5fa" } : {}),
-                })}
-              >
-                <span>{icon}</span>
-                <span style={{ flex: 1 }}>{label}</span>
-                {label === "События" && unreadCount > 0 && <span style={s.badge}>{unreadCount}</span>}
-              </NavLink>
-            ))}
-          </nav>
-        </aside>
+        <Sidebar
+          mobile={isMobile}
+          open={!isMobile || drawerOpen}
+          onClose={() => setDrawerOpen(false)}
+          onLogout={onLogout}
+          showLogout={showLogout}
+        />
 
-        <main style={s.main}>
-          <Routes>
-            <Route path="/"             element={<Overview />} />
-            <Route path="/locations"    element={<Locations />} />
-            <Route path="/devices"      element={<Devices />} />
-            <Route path="/dns"          element={<DNSActivity />} />
-            <Route path="/alerts"       element={<Alerts />} />
-            <Route path="/map"          element={<NetworkMap />} />
-            <Route path="/connections"  element={<Connections />} />
-            <Route path="/bandwidth"    element={<Bandwidth />} />
-            <Route path="/threats"      element={<ThreatIntel />} />
-            <Route path="/feed"         element={<RealtimeFeed />} />
-            <Route path="/assistant"    element={<Assistant />} />
-            <Route path="/settings"     element={<Settings />} />
-          </Routes>
-        </main>
+        <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
+          {isMobile && (
+            <div style={s.topbar}>
+              <button style={s.burger} onClick={() => setDrawerOpen(true)}>☰</button>
+              <span style={s.topTitle}>🛡 FAMILY SECURITY</span>
+            </div>
+          )}
+          <main style={s.main(isMobile)}>
+            <Routes>
+              <Route path="/"             element={<Overview />} />
+              <Route path="/locations"    element={<Locations />} />
+              <Route path="/devices"      element={<Devices />} />
+              <Route path="/dns"          element={<DNSActivity />} />
+              <Route path="/alerts"       element={<Alerts />} />
+              <Route path="/map"          element={<NetworkMap />} />
+              <Route path="/connections"  element={<Connections />} />
+              <Route path="/bandwidth"    element={<Bandwidth />} />
+              <Route path="/threats"      element={<ThreatIntel />} />
+              <Route path="/feed"         element={<RealtimeFeed />} />
+              <Route path="/assistant"    element={<Assistant />} />
+              <Route path="/settings"     element={<Settings />} />
+            </Routes>
+          </main>
+        </div>
+
+        {isMobile && <MobileTabBar onMore={() => setDrawerOpen(true)} />}
       </div>
       <ToastLayer />
     </BrowserRouter>
@@ -173,9 +290,50 @@ function AppInner() {
 }
 
 export default function App() {
+  // authState: "loading" | "login" | "ok"
+  const [authState, setAuthState] = useState("loading");
+  const [demoMode, setDemoMode] = useState(false);
+
+  const checkAuth = useCallback(async () => {
+    try {
+      const h = await api.health();
+      if (h.demo_mode) {
+        setDemoMode(true);
+        setAuthState("ok");
+        return;
+      }
+    } catch {}
+    setDemoMode(false);
+    setAuthState(auth.isLoggedIn() ? "ok" : "login");
+  }, []);
+
+  useEffect(() => {
+    checkAuth();
+    const onUnauthorized = () => setAuthState("login");
+    window.addEventListener("fs:unauthorized", onUnauthorized);
+    return () => window.removeEventListener("fs:unauthorized", onUnauthorized);
+  }, [checkAuth]);
+
+  const logout = () => {
+    auth.clearToken();
+    setAuthState("login");
+  };
+
+  if (authState === "loading") {
+    return (
+      <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", color: "#475569" }}>
+        Загрузка...
+      </div>
+    );
+  }
+
+  if (authState === "login") {
+    return <Login onLogin={() => setAuthState("ok")} />;
+  }
+
   return (
     <AppProvider>
-      <AppInner />
+      <AppShell onLogout={logout} showLogout={!demoMode} />
     </AppProvider>
   );
 }
