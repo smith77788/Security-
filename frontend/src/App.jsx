@@ -170,14 +170,24 @@ function SidebarLocationPicker() {
   );
 }
 
-function Sidebar({ mobile, open, onClose, onLogout, showLogout }) {
+function Sidebar({ mobile, open, onClose, onLogout, showLogout, demoMode }) {
   const { unreadCount } = useApp();
   return (
     <>
       {mobile && open && <div style={s.overlay} onClick={onClose} />}
       <aside style={s.sidebar(mobile, open)}>
         <div style={s.logo}>
-          <div style={s.logoTitle}>FAMILY SECURITY</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <div style={s.logoTitle}>FAMILY SECURITY</div>
+            <span style={{
+              fontSize: 9, fontWeight: 700, letterSpacing: 1, padding: "2px 6px", borderRadius: 4,
+              background: demoMode ? "#451a03" : "#052e16",
+              color: demoMode ? "#fb923c" : "#4ade80",
+              border: `1px solid ${demoMode ? "#92400e" : "#166534"}`,
+            }}>
+              {demoMode ? "DEMO" : "LIVE"}
+            </span>
+          </div>
           <div style={s.logoSub}>Home Network Guardian</div>
         </div>
         <SidebarLocationPicker />
@@ -240,7 +250,7 @@ function MobileTabBar({ onMore }) {
   );
 }
 
-function AppShell({ onLogout, showLogout }) {
+function AppShell({ onLogout, showLogout, demoMode }) {
   const { handleWSEvent } = useApp();
   useWebSocket(handleWSEvent);
   const isMobile = useIsMobile();
@@ -255,6 +265,7 @@ function AppShell({ onLogout, showLogout }) {
           onClose={() => setDrawerOpen(false)}
           onLogout={onLogout}
           showLogout={showLogout}
+          demoMode={demoMode}
         />
 
         <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
@@ -333,7 +344,7 @@ export default function App() {
 
   return (
     <AppProvider>
-      <AppShell onLogout={logout} showLogout={!demoMode} />
+      <AppShell onLogout={logout} showLogout={!demoMode} demoMode={demoMode} />
     </AppProvider>
   );
 }

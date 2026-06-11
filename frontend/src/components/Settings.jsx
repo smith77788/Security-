@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useCallback } from "react";
 import { api } from "../api/client";
 
 const GENERAL_KEYS = [
@@ -60,9 +60,14 @@ export default function Settings() {
   const [msg, setMsg] = useState("");
   const [msgErr, setMsgErr] = useState(false);
   const [testing, setTesting] = useState(false);
+  const [netInfo, setNetInfo] = useState(null);
+  const [scanning, setScanning] = useState(false);
 
   const reload = () => api.settings().then(setSettings).catch(console.error);
-  useEffect(() => { reload(); }, []);
+  const loadNet = useCallback(() => {
+    api.health().then((h) => setNetInfo(h.network)).catch(() => {});
+  }, []);
+  useEffect(() => { reload(); loadNet(); }, [loadNet]);
 
   const flash = (m, err = false) => {
     setMsg(m); setMsgErr(err);
@@ -101,6 +106,18 @@ export default function Settings() {
       flash(`Ошибка: ${e.message}`, true);
     } finally {
       setTesting(false);
+    }
+  };
+
+  const triggerScan = async () => {
+    setScanning(true);
+    try {
+      await api.scanDevices();
+      flash("Сканирование запущено — обновите страницу Устройства через 10 сек");
+    } catch (e) {
+      flash(`Ошибка: ${e.message}`, true);
+    } finally {
+      setScanning(false);
     }
   };
 
@@ -177,6 +194,48 @@ export default function Settings() {
           </button>
         </div>
         <p style={{ ...s.note, marginTop: 10 }}>Retention удалит записи старше указанного числа дней.</p>
+      </div>
+
+      <div style={s.section}>
+        <div style={s.sTitle}>Сеть — текущее состояние</div>
+        {netInfo ? (
+          <>
+            <div style={s.row}>
+              <span style={s.label}>Интерфейс</span>
+              <span style={{ color: "#e2e8f0", fontSize: 13, fontFamily: "monospace" }}>{netInfo.interface}</span>
+            </div>
+            <div style={s.row}>
+              <span style={s.label}>Мой IP</span>
+              <span style={{ color: "#e2e8f0", fontSize: 13, fontFamily: "monospace" }}>{netInfo.my_ip}</span>
+            </div>
+            <div style={s.row}>
+              <span style={s.label}>Шлюз (роутер)</span>
+              <span style={{ color: "#e2e8f0", fontSize: 13, fontFamily: "monospace" }}>{netInfo.gateway}</span>
+            </div>
+            <div style={s.row}>
+              <span style={s.label}>Подсеть</span>
+              <span style={{ color: "#e2e8f0", fontSize: 13, fontFamily: "monospace" }}>{netInfo.subnet}</span>
+            </div>
+            <div style={{ marginTop: 14, display: "flex", gap: 10, flexWrap: "wrap" }}>
+              <button
+                style={{ ...s.saveBtn, background: "#0f766e", opacity: scanning ? 0.6 : 1 }}
+                onClick={triggerScan}
+                disabled={scanning}
+              >
+                {scanning ? "Сканирую..." : "Сканировать сеть сейчас"}
+              </button>
+              <button style={{ ...s.saveBtn, background: "#1e2535" }} onClick={loadNet}>
+                Обновить
+              </button>
+            </div>
+          </>
+        ) : (
+          <p style={s.note}>Загрузка...</p>
+        )}
+        <p style={s.note}>
+          Система автоматически определяет интерфейс и подсеть при старте.<br />
+          Для захвата DNS-трафика включите DNS-захват и раскомментируйте cap_add в docker-compose.yml.
+        </p>
       </div>
 
       <div style={s.section}>

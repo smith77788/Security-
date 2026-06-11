@@ -56,6 +56,7 @@ export const api = {
   blockDevice: (id, reason) => request(`/devices/${id}/block`, { method: "POST", body: JSON.stringify({ reason }) }),
   unblockDevice: (id) => request(`/devices/${id}/unblock`, { method: "POST" }),
   blockedDevices: () => request("/devices/blocked/list"),
+  scanDevices: () => request("/devices/scan", { method: "POST" }),
 
   // DNS
   topDomains: (period = "24h", locationId) =>

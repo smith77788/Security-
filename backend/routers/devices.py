@@ -63,6 +63,15 @@ def acknowledge_device(device_id: int, db: Session = Depends(get_db)):
     return {"ok": True}
 
 
+@router.post("/scan")
+def trigger_scan():
+    """Manually kick off a device scan (runs in background thread)."""
+    import threading
+    from services.device_scanner import run_scan
+    threading.Thread(target=run_scan, daemon=True, name="manual-scan").start()
+    return {"ok": True, "message": "Scan started"}
+
+
 @router.get("/blocked/list")
 def list_blocked(db: Session = Depends(get_db)):
     rows = db.query(BlockedDevice).order_by(BlockedDevice.blocked_at.desc()).all()

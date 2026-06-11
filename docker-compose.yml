@@ -10,7 +10,7 @@ services:
     container_name: family-security-backend
     restart: unless-stopped
     environment:
-      - DEMO_MODE=${DEMO_MODE:-true}
+      - DEMO_MODE=${DEMO_MODE:-false}
       - ADMIN_PASSWORD=${ADMIN_PASSWORD:-changeme}
       - NETWORK_INTERFACE=${NETWORK_INTERFACE:-eth0}
       - LOCAL_SUBNET=${LOCAL_SUBNET:-192.168.1.0/24}

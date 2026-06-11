@@ -85,10 +85,27 @@ export default function Overview() {
   }, [selectedLocationId]);
 
   const totalOnline = locations.filter((l) => l.is_online).length;
+  const totalDevices = locations.reduce((a, l) => a + l.total_devices, 0);
 
   return (
     <div>
       <h1 style={s.h1}>{selectedLocationId ? locations.find((l) => l.id === selectedLocationId)?.name : "Все локации"}</h1>
+
+      {/* First-run guide when no devices found yet */}
+      {!selectedLocationId && totalDevices === 0 && locations.length > 0 && (
+        <div style={{
+          background: "#0f2a1a", border: "1px solid #166534", borderRadius: 12,
+          padding: "16px 20px", marginBottom: 20,
+        }}>
+          <div style={{ fontSize: 15, fontWeight: 700, color: "#4ade80", marginBottom: 8 }}>
+            Живой режим активен — устройства ещё не обнаружены
+          </div>
+          <div style={{ fontSize: 13, color: "#86efac", lineHeight: 1.6 }}>
+            Система подключена к вашей сети и готова к работе. Первое сканирование запустится автоматически.<br />
+            Перейдите в <strong>Настройки → Сеть</strong>, чтобы проверить детектированный интерфейс и запустить скан вручную.
+          </div>
+        </div>
+      )}
 
       {/* Global metrics bar */}
       {!selectedLocationId && (
