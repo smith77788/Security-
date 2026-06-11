@@ -315,7 +315,13 @@ def discover_devices(subnet: str = LOCAL_SUBNET) -> list[dict]:
     for ip, entry in found.items():
         mac = entry.get("mac", _fake_mac(ip))
         hostname = entry.get("hostname") or _resolve_hostname(ip)
-        vendor = lookup_vendor(mac, OUI_FILE) if not mac.startswith("02:00") else entry.get("method", "")
+        # For real MACs (from ARP) use OUI lookup; for fake ones encode how we found the device
+        if not mac.startswith("02:00"):
+            vendor = lookup_vendor(mac, OUI_FILE)
+        else:
+            method = entry.get("method", "")
+            port = entry.get("open_port")
+            vendor = f"tcp:{port}" if method == "tcp" and port else method
         devices.append({
             "mac": mac,
             "ip": ip,

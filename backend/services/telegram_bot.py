@@ -41,6 +41,62 @@ def _fmt_bytes(b) -> str:
     return f"{b} Б"
 
 
+_PORT_LABELS = {
+    "22": "Linux/Роутер",  "23": "Telnet-устройство",
+    "80": "Веб-устройство", "443": "Веб-устройство",
+    "8080": "Веб-сервер",  "8443": "Веб-сервер",
+    "554": "IP-камера",    "7547": "Роутер (TR-069)",
+    "1883": "IoT (MQTT)",  "53": "DNS-сервер",
+    "21": "FTP-сервер",    "8181": "Умный дом",
+}
+
+_METHOD_ICONS = {
+    "ssdp": "📺", "mdns": "📱", "netbios": "💻",
+    "arp": "🔌",  "tcp": "🌐",
+}
+
+_PORT_ICONS = {
+    "22": "🖥", "23": "📡", "80": "🌐", "443": "🌐",
+    "8080": "🌐", "554": "📹", "7547": "📡", "1883": "🔌",
+    "53": "🔍",
+}
+
+
+def _device_display(d, gateway: str) -> tuple:
+    """Return (icon, label) for a device."""
+    ip = d.ip or ""
+    vendor = d.vendor or ""
+
+    # Gateway / router
+    if ip == gateway or ip.endswith(".1"):
+        return "🌐", "Роутер"
+
+    # User gave a name → use it
+    if d.friendly_name:
+        return "📱", d.friendly_name
+
+    # Hostname resolved
+    if d.hostname:
+        return "💻", d.hostname
+
+    # Vendor from OUI (real MAC)
+    if vendor and not vendor.startswith("tcp:") and vendor not in _METHOD_ICONS:
+        return "🔌", vendor
+
+    # TCP scan with port info
+    if vendor.startswith("tcp:"):
+        port = vendor.split(":")[1]
+        icon = _PORT_ICONS.get(port, "📱")
+        label = _PORT_LABELS.get(port, f"Устройство (порт {port})")
+        return icon, label
+
+    # Method-based label
+    if vendor in _METHOD_ICONS:
+        return _METHOD_ICONS[vendor], vendor.upper() + "-устройство"
+
+    return "📱", ip
+
+
 MAIN_MENU = {
     "inline_keyboard": [
         [{"text": "🏠 Моя сеть", "callback_data": "my_network"}],
@@ -163,20 +219,29 @@ class TelegramBot:
     def _screen_devices(self):
         from database import SessionLocal
         from models import Device
+        from services.auto_config import get as net_cfg
         db = SessionLocal()
         try:
             rows = (db.query(Device)
                     .filter(Device.is_active == True)  # noqa: E712
                     .order_by(Device.last_seen.desc())
-                    .limit(15).all())
+                    .limit(12).all())
             if not rows:
                 return "Устройств не найдено", BACK_MENU
-            lines = [f"<b>📡 УСТРОЙСТВА</b> (активные, {len(rows)})\n"]
+
+            gateway = net_cfg().get("gateway", "")
+            lines = [f"<b>📡 УСТРОЙСТВА</b> ({len(rows)} активных)\n"]
+            btn_rows = []
             for d in rows:
-                name = d.friendly_name or d.vendor or d.mac
+                icon, label = _device_display(d, gateway)
                 badge = " 🆕" if d.is_new else ""
-                lines.append(f"• {_esc(name)}{badge}\n   <code>{_esc(d.ip)}</code> · {_esc(d.mac)}")
-            return "\n".join(lines), BACK_MENU
+                lines.append(f"{icon} <b>{_esc(label)}</b>{badge}  <code>{_esc(d.ip)}</code>")
+                btn_text = f"✏️ {d.friendly_name or d.ip}"
+                btn_rows.append([{"text": btn_text, "callback_data": f"name_dev:{d.mac}"}])
+
+            lines.append("\n<i>Нажми ✏️ чтобы назвать устройство</i>")
+            btn_rows.append([{"text": "⬅️ Меню", "callback_data": "menu"}])
+            return "\n".join(lines), {"inline_keyboard": btn_rows}
         finally:
             db.close()
 
@@ -288,6 +353,45 @@ class TelegramBot:
             [{"text": "⬅️ Меню", "callback_data": "menu"}],
         ]}
         return "\n".join(lines), kb
+
+    def _action_name_device_start(self, mac: str):
+        from database import SessionLocal
+        from models import Device
+        from services.auto_config import get as net_cfg
+        db = SessionLocal()
+        try:
+            d = db.query(Device).filter(Device.mac == mac).first()
+            if not d:
+                return "❌ Устройство не найдено", BACK_MENU
+            gateway = net_cfg().get("gateway", "")
+            _, current_label = _device_display(d, gateway)
+        finally:
+            db.close()
+        self._waiting_for[self._chat_id] = {"action": "name_device", "mac": mac}
+        return (
+            f"✏️ Устройство: <code>{_esc(mac)}</code>  IP: <code>{_esc(d.ip)}</code>\n"
+            f"Сейчас называется: <b>{_esc(current_label)}</b>\n\n"
+            f"Введи своё название (например: Телефон Маши, Smart TV, Ноутбук):\n"
+            f"<i>Или отправь /отмена чтобы не менять</i>",
+            None
+        )
+
+    def _handle_name_device_finish(self, chat_id: str, name: str, mac: str):
+        from database import SessionLocal
+        from models import Device
+        db = SessionLocal()
+        try:
+            d = db.query(Device).filter(Device.mac == mac).first()
+            if not d:
+                return "❌ Устройство не найдено", BACK_MENU
+            d.friendly_name = name.strip()[:64]
+            db.commit()
+            return (
+                f"✅ Устройство <code>{_esc(d.ip)}</code> названо:\n<b>{_esc(d.friendly_name)}</b>",
+                MAIN_MENU
+            )
+        finally:
+            db.close()
 
     def _action_rename_start(self, loc_id: str):
         from database import SessionLocal
@@ -443,10 +547,13 @@ class TelegramBot:
             return ("<b>🛡 FAMILY SECURITY</b>\nВыберите раздел:", MAIN_MENU)
         if key == "actions":
             return ("<b>⚙️ ДЕЙСТВИЯ</b>\nЧто сделать?", ACTIONS_MENU)
-        # Ключи с параметром: "rename_start:1"
+        # Ключи с параметром: "rename_start:1", "name_dev:AA:BB:..."
         if key.startswith("rename_start:"):
             loc_id = key.split(":", 1)[1]
             return self._action_rename_start(loc_id)
+        if key.startswith("name_dev:"):
+            mac = key.split(":", 1)[1]
+            return self._action_name_device_start(mac)
         method = self.SCREENS.get(key)
         if not method:
             return ("Неизвестная команда. /menu", MAIN_MENU)
@@ -478,12 +585,16 @@ class TelegramBot:
             self._send(chat_id, "⛔ Доступ запрещён.")
             return
 
-        # Ожидаем ввод от пользователя (диалог переименования)
+        # Ожидаем ввод от пользователя (диалог переименования/именования)
         waiting = self._waiting_for.get(chat_id)
         if waiting and not text.startswith("/"):
             self._waiting_for.pop(chat_id, None)
             if waiting["action"] == "rename":
                 text_out, kb = self._handle_rename_finish(chat_id, text, waiting["loc_id"])
+                self._send(chat_id, text_out, kb)
+                return
+            if waiting["action"] == "name_device":
+                text_out, kb = self._handle_name_device_finish(chat_id, text, waiting["mac"])
                 self._send(chat_id, text_out, kb)
                 return
 
