@@ -1,19 +1,24 @@
 """
-Device discovery for Android/Termux without root.
+Device discovery for Linux, Windows, and Android/Termux.
 
 Methods (in order):
-  1. SSDP/UPnP multicast   — routers, smart TVs, IoT devices
-  2. mDNS multicast         — phones, Macs, printers, Chromecasts
-  3. NetBIOS broadcast      — Windows / Samba hosts
-  4. TCP connect scan       — any host with an open port
-  5. ip neigh / /proc/net/arp — if available (Linux with root)
+  1. Windows arp -a       — parses dash-separated MACs from Windows ARP table
+  2. ip neigh show        — Linux kernel neighbor table (Android/Linux)
+  3. /proc/net/arp        — Linux ARP table (needs root on Android 12+)
+  4. arp -n               — Linux/macOS net-tools
+  5. SSDP/UPnP multicast  — routers, smart TVs, IoT devices
+  6. mDNS multicast       — phones, Macs, printers
+  7. NetBIOS broadcast    — Windows / Samba hosts
+  8. TCP connect scan     — any host with an open port
+  9. nmap -sn             — optional, if installed
 
-All methods use ordinary sockets — no CAP_NET_RAW, no root required.
+All socket-based methods require only SOCK_DGRAM/SOCK_STREAM — no root needed.
 Read-only / passive: no exploitation, no credential testing.
 """
 import concurrent.futures
 import ipaddress
 import logging
+import platform
 import re
 import select
 import socket
@@ -22,6 +27,8 @@ import subprocess
 import time
 from datetime import datetime
 from typing import Optional
+
+_IS_WINDOWS = platform.system() == "Windows"
 
 from sqlalchemy.orm import Session
 
@@ -32,7 +39,13 @@ from utils.oui_lookup import lookup_vendor
 
 log = logging.getLogger("scanner")
 
-_MAC_RE = re.compile(r"([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}")
+_MAC_RE      = re.compile(r"([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}")
+_MAC_DASH_RE = re.compile(r"([0-9a-fA-F]{2}-){5}[0-9a-fA-F]{2}")  # Windows format
+
+
+def _norm_mac(mac: str) -> str:
+    """Normalise MAC to colon-separated uppercase."""
+    return mac.upper().replace("-", ":")
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -49,6 +62,40 @@ def _fake_mac(ip: str) -> str:
     if len(parts) == 4:
         return f"02:00:{int(parts[0]):02X}:{int(parts[1]):02X}:{int(parts[2]):02X}:{int(parts[3]):02X}"
     return "02:00:00:00:00:01"
+
+
+# ── Method 0: Windows arp -a ─────────────────────────────────────────────────
+
+def _windows_arp() -> list[dict]:
+    """Parse `arp -a` on Windows — gives real MACs without admin rights.
+
+    Windows output example:
+      Interface: 192.168.1.104 --- 0x12
+        Internet Address      Physical Address      Type
+        192.168.1.1           aa-bb-cc-dd-ee-ff     dynamic
+    """
+    if not _IS_WINDOWS:
+        return []
+    results: dict[str, dict] = {}
+    try:
+        out = subprocess.check_output(["arp", "-a"], text=True, timeout=10,
+                                      stderr=subprocess.DEVNULL)
+        for line in out.splitlines():
+            line = line.strip()
+            # Match lines like:  192.168.1.1   aa-bb-cc-dd-ee-ff   dynamic
+            parts = line.split()
+            if len(parts) < 2:
+                continue
+            ip  = parts[0]
+            raw = parts[1]
+            if _MAC_DASH_RE.match(raw) or _MAC_RE.match(raw):
+                mac = _norm_mac(raw)
+                if mac != "FF:FF:FF:FF:FF:FF" and not mac.startswith("01:00"):
+                    results[mac] = {"ip": ip, "mac": mac}
+    except Exception as e:
+        log.debug("Windows arp -a failed: %s", e)
+    log.info("Windows ARP: found %d entries", len(results))
+    return list(results.values())
 
 
 # ── Method 1: SSDP / UPnP ────────────────────────────────────────────────────
@@ -293,8 +340,12 @@ def discover_devices(subnet: str = LOCAL_SUBNET) -> list[dict]:
                 # prefer real MACs over fake ones
                 found[ip] = e
 
-    # Fast multicast methods first (parallel)
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+    # Windows ARP first — best source of real MACs on Windows
+    if _IS_WINDOWS:
+        _add(_windows_arp())
+
+    # Fast multicast + Linux ARP methods (parallel)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as pool:
         f_ssdp = pool.submit(_ssdp_scan)
         f_mdns = pool.submit(_mdns_scan)
         f_nb   = pool.submit(_netbios_scan, _broadcast(subnet))

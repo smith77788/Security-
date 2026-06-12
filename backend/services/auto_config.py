@@ -5,11 +5,14 @@ using psutil + socket — no root required.
 """
 import ipaddress
 import logging
+import platform
 import socket
 import subprocess
 from typing import Optional
 
 import psutil
+
+_IS_WINDOWS = platform.system() == "Windows"
 
 log = logging.getLogger("auto_config")
 
@@ -36,6 +39,39 @@ def _default_route_interface() -> Optional[str]:
             for addr in addrs:
                 if addr.family == socket.AF_INET and addr.address == our_ip:
                     return iface
+    except Exception:
+        pass
+    return None
+
+
+def _get_gateway_windows() -> Optional[str]:
+    """Find default gateway on Windows via `route print`."""
+    try:
+        out = subprocess.check_output(
+            ["route", "print", "0.0.0.0"],
+            text=True, timeout=5, stderr=subprocess.DEVNULL,
+        )
+        for line in out.splitlines():
+            parts = line.split()
+            # Network Destination  Netmask  Gateway  Interface  Metric
+            # 0.0.0.0              0.0.0.0  192.168.1.1  ...
+            if len(parts) >= 3 and parts[0] == "0.0.0.0" and parts[1] == "0.0.0.0":
+                gw = parts[2]
+                if gw != "On-link":
+                    return gw
+    except Exception:
+        pass
+    # Fallback: ipconfig
+    try:
+        out = subprocess.check_output(["ipconfig"], text=True, timeout=5,
+                                      stderr=subprocess.DEVNULL)
+        for line in out.splitlines():
+            if "Default Gateway" in line or "Основной шлюз" in line:
+                parts = line.split(":")
+                if len(parts) == 2:
+                    gw = parts[1].strip()
+                    if gw and gw != "":
+                        return gw
     except Exception:
         pass
     return None
@@ -121,7 +157,7 @@ def detect() -> dict:
             pass
 
     # Get default gateway — try several methods (Android needs multiple fallbacks)
-    gateway = _get_gateway()
+    gateway = _get_gateway_windows() if _IS_WINDOWS else _get_gateway()
 
     result = {
         "interface": iface,
