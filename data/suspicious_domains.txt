@@ -1,0 +1,42 @@
+# Suspicious / known-bad domains list
+# Format: one domain per line, # for comments
+# Sources: community threat intel, known C2, malware domains
+
+# Known malware/C2
+evil.example.com
+malware-c2.net
+botnet-controller.biz
+
+# Cryptomining
+coinhive.com
+coin-hive.com
+minexmr.com
+hashvault.pro
+cryptonight.net
+moneroocean.stream
+
+# Known phishing infrastructure patterns (not real domains — examples)
+free-prize-winner-now.com
+login-paypal-secure-verify.com
+account-update-bank-secure.net
+
+# Ad / tracking networks known for aggressive data collection
+doubleclick.net
+googletagmanager.com
+hotjar.com
+fullstory.com
+mixpanel.com
+amplitude.com
+segment.io
+intercom.io
+
+# Potentially unwanted / stalkerware
+hoverwatch.com
+mspy.com
+flexispy.com
+spyic.com
+
+# Known DNS-over-HTTPS circumvention (unusual for home devices)
+dns.google
+cloudflare-dns.com
+1dot1dot1dot1.cloudflare-dns.com

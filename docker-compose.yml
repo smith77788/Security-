@@ -1,0 +1,51 @@
+version: "3.9"
+
+# ── Central Hub ────────────────────────────────────────────────────────────────
+# Run on your main home server / mini-PC.
+# Agents on remote locations connect to this hub.
+
+services:
+  backend:
+    build: ./backend
+    container_name: family-security-backend
+    restart: unless-stopped
+    environment:
+      - DEMO_MODE=${DEMO_MODE:-false}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-changeme}
+      - NETWORK_INTERFACE=${NETWORK_INTERFACE:-eth0}
+      - LOCAL_SUBNET=${LOCAL_SUBNET:-192.168.1.0/24}
+      - SCAN_INTERVAL_SECONDS=${SCAN_INTERVAL_SECONDS:-60}
+      - DNS_CAPTURE_ENABLED=${DNS_CAPTURE_ENABLED:-false}
+      - LOG_RETENTION_DAYS=${LOG_RETENTION_DAYS:-30}
+      - JWT_SECRET=${JWT_SECRET:-change-me-use-long-random-secret}
+      - JWT_EXPIRE_HOURS=${JWT_EXPIRE_HOURS:-168}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}
+      - DB_PATH=/data/family_security.db
+      - CORS_ORIGINS=http://localhost:3000,http://localhost:5173
+    volumes:
+      - db_data:/data
+      - ./data:/app/../data:ro
+    ports:
+      - "8000:8000"
+    # ── Расширенные сетевые возможности ──────────────────────────────────────
+    # Раскомментируй для:
+    #   - Реальной блокировки устройств через iptables (NET_ADMIN)
+    #   - Пассивного захвата DNS/пакетов (NET_RAW)
+    #   - Сканирования ARP на уровне интерфейса (network_mode: host)
+    # network_mode: host
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+
+  frontend:
+    build: ./frontend
+    container_name: family-security-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+
+volumes:
+  db_data:
